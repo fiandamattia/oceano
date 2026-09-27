@@ -48,13 +48,13 @@
 // Here the data are imported from external files and it can target any shallow
 // water simulation.
 #undef  ICBC_IMPULSIVEWAVE
-#undef  ICBC_SHALLOWWATERVORTEX
+#define  ICBC_SHALLOWWATERVORTEX
 #undef  ICBC_STOMMELGYRE
 #undef  ICBC_LAKEATREST
 #undef  ICBC_TRACERADVECTION
 #undef  ICBC_CHANNELFLOW
 #undef  ICBC_THACKEROSCILLATIONS2D
-#define ICBC_REALISTIC
+#undef	ICBC_REALISTIC
 // We have a few models: the base model are the shallow water equations. You can add the
 // computation of passive tracers or you can add a simple suspended sediment module or a
 // biological ones. Please select the number of tracers below.
