@@ -48,9 +48,11 @@
 // Here the data are imported from external files and it can target any shallow
 // water simulation.
 #undef  ICBC_IMPULSIVEWAVE
-#define  ICBC_SHALLOWWATERVORTEX
+#undef  ICBC_SHALLOWWATERVORTEX
+#undef ICBC_SOLIDBODYROTATION
 #undef  ICBC_STOMMELGYRE
 #undef  ICBC_LAKEATREST
+#define ICBC_LAKEATRESTBIOLOGY
 #undef  ICBC_TRACERADVECTION
 #undef  ICBC_CHANNELFLOW
 #undef  ICBC_THACKEROSCILLATIONS2D
@@ -58,10 +60,10 @@
 // We have a few models: the base model are the shallow water equations. You can add the
 // computation of passive tracers or you can add a simple suspended sediment module or a
 // biological ones. Please select the number of tracers below.
-#define MODEL_SHALLOWWATER
+#undef MODEL_SHALLOWWATER
 #undef  MODEL_SHALLOWWATERWITHTRACER
 #undef  MODEL_SHALLOWWATERWITHSEDIMENT
-#undef  MODEL_SHALLOWWATERWITHBIOLOGY
+#define  MODEL_SHALLOWWATERWITHBIOLOGY
 // Next come the physics. With the following cpp keys one can switch between the different
 // formulations of a given term in the right-hand side of the shallow water equations.
 // For the bottom friction one has two formulations: a simple linear bottom friction and
@@ -187,10 +189,14 @@
 #include <icbc/Icbc_ImpulsiveWave.h>
 #elif defined ICBC_SHALLOWWATERVORTEX
 #include <icbc/Icbc_ShallowWaterVortex.h>
+#elif defined ICBC_SOLIDBODYROTATION
+#include <icbc/Icbc_ShallowWaterWithBiology.h>
 #elif defined ICBC_STOMMELGYRE
 #include <icbc/Icbc_StommelGyre.h>
 #elif defined ICBC_LAKEATREST
 #include <icbc/Icbc_LakeAtRest.h>
+#elif defined ICBC_LAKEATRESTBIOLOGY
+#include <icbc/Icbc_LakeAtRestBiology.h>
 #elif defined ICBC_TRACERADVECTION
 #include <icbc/Icbc_TracerAdvection.h>
 #elif defined ICBC_CHANNELFLOW
@@ -218,7 +224,7 @@ namespace Problem
   // want to use for the volume terms:
   constexpr unsigned int n_q_points_1d        = floor(1.5*fe_degree) + 1;
   // The number of tracers:
-  constexpr unsigned int n_tracers            = 0;
+  constexpr unsigned int n_tracers            = 2;
   // and the maximum number of iterations for the iterative method that invert the
   // mass matrix in the continuity equation. For wet-dry cells convergence
   // is fast so a few iterations are enough, for wet cells the iterative method is basically
@@ -1687,9 +1693,13 @@ int main(int argc, char **argv)
       bc = new ICBC::BcImpulsiveWave<dimension, n_variables>(prm);
 #elif defined ICBC_SHALLOWWATERVORTEX
       bc = new ICBC::BcShallowWaterVortex<dimension, n_variables>(prm);
+#elif defined ICBC_SOLIDBODYROTATION
+      bc = new ICBC::BcShallowWaterVortex<dimension, n_variables>(prm);
 #elif defined ICBC_STOMMELGYRE
       bc = new ICBC::BcStommelGyre<dimension, n_variables>(prm);
 #elif defined ICBC_LAKEATREST
+      bc = new ICBC::BcLakeAtRest<dimension, n_variables>(prm);
+#elif defined ICBC_LAKEATRESTBIOLOGY
       bc = new ICBC::BcLakeAtRest<dimension, n_variables>(prm);
 #elif defined ICBC_TRACERADVECTION
       bc = new ICBC::BcTracerAdvection<dimension, n_variables>(prm);

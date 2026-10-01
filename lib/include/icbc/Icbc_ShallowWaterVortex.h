@@ -145,8 +145,8 @@ namespace ICBC
     Assert(dim == 2, ExcNotImplemented());
 
     Point<dim> x0;
-    x0[0] = 0.5 + uoo *t;
-    x0[1] = 0.5;
+    x0[0] = 0.5 + uoo *t; // let the center of the vortex in the exact solution move by uoo
+    x0[1] = 0.5; // along y it stays in 0.5
 
 #if defined ICBC_SHALLOWWATERVORTEX_REGULARITYP1
     const unsigned int p = 1;

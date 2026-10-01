@@ -45,7 +45,7 @@ namespace Model
     ShallowWaterWithBiology(IO::ParameterHandler &prm);
     ~ShallowWaterWithBiology() = default;
 
-    Physics::GrowthDeathRateRosenzweigMacArthur growth_death_rate;
+    Physics::GrowthDeathRateRosenzweigMacArthur growth_death_rate; // Call of the method regarding the model, derived from class physics and we call this "growth_death_rate"
 
     template <int dim, int n_tra>
     inline DEAL_II_ALWAYS_INLINE //
@@ -101,7 +101,7 @@ namespace Model
   {
     const Number h = depth(height, bathymetry);
 
-    return h * growth_death_rate.value<n_tra, Number>(concentration);
+    return h * growth_death_rate.value<n_tra, Number>(concentration); // return h * the concentration given by the MacArthur_Rosenzweig model
   }
 } // namespace Model
 #endif // SHALLOWWATERWITHBIOLOGY_H
