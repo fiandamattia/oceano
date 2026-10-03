@@ -373,9 +373,11 @@ namespace Model
     Tensor<1, dim, Tensor<1, dim, Number>> flux;
     for (unsigned int d = 0; d < dim; ++d)
       for (unsigned int e = 0; e < dim; ++e)
-        flux[e][d] = discharge[e] * v[d];
-
+        //flux[e][d] = discharge[e] * v[d];
+        flux[e][d] = 0;
+        
     return flux;
+
   }
 
   template <int dim, typename Number>
@@ -397,8 +399,9 @@ namespace Model
     Tensor<1, dim, Tensor<1, dim, Number>> flux;
     for (unsigned int d = 0; d < dim; ++d)
       for (unsigned int e = 0; e < dim; ++e)
-        flux[e][d] = discharge[e] * v[d]
-          - nu * (gradient_velocity[e][d] + gradient_velocity[d][e]);
+        //flux[e][d] = discharge[e] * v[d]
+        //  - nu * (gradient_velocity[e][d] + gradient_velocity[d][e]);
+        flux[e][d] = 0. - nu * (gradient_velocity[e][d] + gradient_velocity[d][e]);
     for (unsigned int e = 0; e < dim; ++e)
       flux[e][e] += nu * div;
 

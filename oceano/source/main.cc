@@ -49,10 +49,10 @@
 // water simulation.
 #undef  ICBC_IMPULSIVEWAVE
 #undef  ICBC_SHALLOWWATERVORTEX
-#undef ICBC_SOLIDBODYROTATION
+#define  ICBC_SOLIDBODYROTATION
 #undef  ICBC_STOMMELGYRE
 #undef  ICBC_LAKEATREST
-#define ICBC_LAKEATRESTBIOLOGY
+#undef  ICBC_LAKEATRESTBIOLOGY
 #undef  ICBC_TRACERADVECTION
 #undef  ICBC_CHANNELFLOW
 #undef  ICBC_THACKEROSCILLATIONS2D
@@ -61,7 +61,7 @@
 // computation of passive tracers or you can add a simple suspended sediment module or a
 // biological ones. Please select the number of tracers below.
 #undef MODEL_SHALLOWWATER
-#undef  MODEL_SHALLOWWATERWITHTRACER
+#undef MODEL_SHALLOWWATERWITHTRACER
 #undef  MODEL_SHALLOWWATERWITHSEDIMENT
 #define  MODEL_SHALLOWWATERWITHBIOLOGY
 // Next come the physics. With the following cpp keys one can switch between the different

@@ -48,7 +48,7 @@ namespace ICBC
 
   // We define constant parameters that help in the definition of the initial
   // and boundary conditions. In the initial test case, the useful parameter is the angular vel
-  constexpr double omega = 2; // T = 2*pi/OMEGA = 2pi where OMEGA = 2 * omega in our case
+  constexpr double omega = 0.5; // T = 2*pi/OMEGA = 2pi where OMEGA = 2 * omega in our case
 
 
 
@@ -164,32 +164,39 @@ namespace ICBC
     // insert then the equalities for u and v.
     // To have supercritical at the boundary, we find h < (2*omega^2*r^2)/g for r = 1/2 and so we
     // find h_c < 1/(8*g)
-    const double h_c = 0.4;
-    const double depth = h_c + (2. * omega * omega / g)
+    // const double h_c = 0.4;
+    /*const double depth = h_c + (2. * omega * omega / g)
                      * ((x[0] - x0[0]) * (x[0] - x0[0])
                         + (x[1] - x0[1]) * (x[1] - x0[1]));
+                        */
                         // h chosen to be in supercritical regime
-    // const double depth = 1;
+    const double depth = 0.4;
     const double u     = -2 * omega * (x[1] - x0[1]);
     const double v     = +2 * omega * (x[0] - x0[0]);
     const double r2 = (x[0]-1)*(x[0]-1) + (x[1]-1)*(x[1]-1);
-
+    Point<2> lower_left(1., 1.);
+    Point<2> upper_right(1.6, 1.6);
+    BoundingBox<2> bbox(std::make_pair(lower_left, upper_right));
     if (component == 0)
       return depth;
     else if (component == 1)
-      return u;
+      return 0.;
     else if (component == 2)
-      return v;
-    else
+      return 0.;
+    else if (component == 3)
       // return 0.1 * x[1];
-      /*if (((x[0]-1)*(x[0]-1)+(x[1]-1)*(x[1]-1)) < 0.2*0.2)
-      	// return 1;
-	
-	return std::exp(-r2/(2.*0.2*0.2));
+      if (bbox.point_inside(x,1e-6))
+      	return 0.8;
+	//return std::exp(-r2/(2.*0.2*0.2));
       else
-      	return 0;
-      */
-      return std::exp(-r2/(2.*0.2*0.2));
+      	return 0.;
+    else if (component == 4)
+       if (bbox.point_inside(x,1e-6))
+      	return 0.3;
+	//return std::exp(-r2/(2.*0.2*0.2));
+      else
+      	return 0.;    
+      //return std::exp(-r2/(2.*0.2*0.2));
   }
 
 
@@ -234,8 +241,12 @@ namespace ICBC
   {
     this->set_supercritical_inflow_boundary(
       1, std::make_unique<ExactSolution<dim, n_vars>>(0, prm));
-    this->set_supercritical_outflow_boundary(
+    this->set_supercritical_inflow_boundary(
       2, std::make_unique<ExactSolution<dim, n_vars>>(0, prm));
+    //this->set_supercritical_outflow_boundary(
+    //  1, std::make_unique<ExactSolution<dim, n_vars>>(0, prm));
+    //this->set_supercritical_outflow_boundary(
+    //  2, std::make_unique<ExactSolution<dim, n_vars>>(0, prm));
     // Teoricamente posso commentare il wall boundary
     this->set_wall_boundary(0);
   }

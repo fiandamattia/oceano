@@ -102,7 +102,8 @@ namespace Physics
       Number(r) * n1 * (Number(1.0) - n1 / Number(K)) - predation;
     source[1] =
       Number(e) * predation - Number(d) * n2;
-
+    //source[0] = 0.;
+    //source[1] = 0.;
     return source;
   }
 } // namespace Physics

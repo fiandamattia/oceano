@@ -1340,14 +1340,14 @@ namespace SpaceDiscretization
               num_flux.numerical_presflux_strong<dim>(z_m, z_p, normal, zb_m, zb_m);
             flux += pressure_numerical_fluxes;
 
-            if (at_outflow)
+            /*if (at_outflow)
               for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
                 {
                   if (rho_u_dot_n[v] < -1e-12)
                     for (unsigned int d = 0; d < dim; ++d)
-                      flux[d][v] = 0.;
+                      // flux[d][v] = 0.;
                 }
-
+            */
             phi_discharge.submit_value(-flux, q);
           }
 

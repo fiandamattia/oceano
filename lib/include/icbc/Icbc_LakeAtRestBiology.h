@@ -162,7 +162,8 @@ namespace ICBC
   {
     Assert(dim == 2, ExcNotImplemented());
     const double r2 = (x[0]-1)*(x[0]-1) + (x[1]-1)*(x[1]-1);
-    const double gaussian = std::exp(-r2/(2*0.2*0.2));
+    const double sigma = 0.2;
+    const double gaussian = std::exp(-r2/(2*sigma*sigma));
     if (component == 0)
       return z0;
     else if (component == 1)
@@ -171,7 +172,6 @@ namespace ICBC
       return 0.;
     else if (component == 3)
       return 0.5*gaussian;
-      // return std::exp(-r2/(2.*0.2*0.2));
     else if (component == 4)
       return 0.625*gaussian;
     else
@@ -204,7 +204,8 @@ namespace ICBC
     Assert(dim == 2, ExcNotImplemented());
     // Assert(n_vars == 3, ExcNotImplemented());
     const double r2 = (x[0]-1)*(x[0]-1) + (x[1]-1)*(x[1]-1);
-    const double gaussian = std::exp(-r2/(2*0.2*0.2));
+    const double sigma = 0.2;
+    const double gaussian = std::exp(-r2/(2*sigma*sigma));
     if (component == 0)
       if ((0.05 <= x[0]) && (x[0] <= 0.15))
         return z0 + a0;
@@ -215,19 +216,19 @@ namespace ICBC
     else if (component == 2)
       return 0.;
     else if (component == 3)
-      if (r2<0.2*0.2)
+      /*if (r2<0.2*0.2)
         return 0.8;
       else
         return 0.; 
-      //return 0.8*gaussian;
-      // return std::exp(-r2/(2.*0.2*0.2));
-      
+      */
+      return 0.8*gaussian;      
     else if (component == 4)
-      if (r2<0.2*0.2)
+      /*if (r2<0.2*0.2)
         return 0.3;
       else
         return 0.;
-      //return 0.3*gaussian;
+        */
+      return 0.3*gaussian;
     else
       return 0.;
   }
