@@ -14,12 +14,12 @@ subsection Mesh & hp parameters
   # Maximum grid level for refinement (=1 the mesh is halved, etc ...)
   set Max_level_of_mesh_refinement = 0
   # Time interval to remesh
-  set Mesh_adaptation_tick = 0.002
+  set Mesh_adaptation_tick = 0.0002
 end
 
 subsection Time parameters
   # Final time the simulation
-  set Final_time = 30
+  set Final_time = 30.
   # Courant number
   set CFL = 0.1
 end
@@ -30,7 +30,7 @@ subsection Physical constants
   # Horizontal viscosity coefficient
   set horizontal_viscosity = 0.
   
-  set horizontal_diffusivity = 0.
+  set horizontal_diffusivity = 0.001
 end
 
 subsection Biological constants

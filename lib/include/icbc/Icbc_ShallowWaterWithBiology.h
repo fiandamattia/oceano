@@ -173,16 +173,27 @@ namespace ICBC
     const double depth = 0.4;
     const double u     = -2 * omega * (x[1] - x0[1]);
     const double v     = +2 * omega * (x[0] - x0[0]);
-    const double r2 = (x[0]-1)*(x[0]-1) + (x[1]-1)*(x[1]-1);
+    const double r2 = (x[0]-1.5)*(x[0]-1.5) + (x[1]-1.5)*(x[1]-1.5);
+    const double sigma = 0.1; 
+    const double gaussian = std::exp(-r2/(2*sigma*sigma));
+    const double dx = x[0] - 1.0;
+const double R = 0.05;      // raggio del plateau
+
+double flat_gaussian;
+
+    if (r2 <= R)
+      flat_gaussian = 1.0;
+    else
+      flat_gaussian = std::exp(-(r2-R)*(r2-R)/(2.0*sigma*sigma));
     Point<2> lower_left(1., 1.);
     Point<2> upper_right(1.6, 1.6);
     BoundingBox<2> bbox(std::make_pair(lower_left, upper_right));
     if (component == 0)
       return depth;
     else if (component == 1)
-      return 0.;
+      return u;
     else if (component == 2)
-      return 0.;
+      return v;
     else if (component == 3)
       // return 0.1 * x[1];
       if (bbox.point_inside(x,1e-6))
@@ -190,14 +201,16 @@ namespace ICBC
 	//return std::exp(-r2/(2.*0.2*0.2));
       else
       	return 0.;
+      //return 0.8*flat_gaussian;
     else if (component == 4)
-       if (bbox.point_inside(x,1e-6))
+      if (bbox.point_inside(x,1e-6))
       	return 0.3;
 	//return std::exp(-r2/(2.*0.2*0.2));
       else
       	return 0.;    
       //return std::exp(-r2/(2.*0.2*0.2));
-  }
+      //return 0.3*flat_gaussian;
+  };
 
 
 

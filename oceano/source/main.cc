@@ -219,10 +219,11 @@ namespace Problem
   using Number = double;
   // Besides the problem dimension, which is two, and polynomial degree we want to run with:
   constexpr unsigned int dimension            = 2;
-  constexpr unsigned int fe_degree            = 1;
+  constexpr unsigned int fe_degree            = 2;
   // we also specify a number of points in the Gauss-Legendre quadrature formula we
   // want to use for the volume terms:
   constexpr unsigned int n_q_points_1d        = floor(1.5*fe_degree) + 1;
+  // constexpr unsigned int n_q_points_1d        = 5;
   // The number of tracers:
   constexpr unsigned int n_tracers            = 2;
   // and the maximum number of iterations for the iterative method that invert the
