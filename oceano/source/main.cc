@@ -219,7 +219,7 @@ namespace Problem
   using Number = double;
   // Besides the problem dimension, which is two, and polynomial degree we want to run with:
   constexpr unsigned int dimension            = 2;
-  constexpr unsigned int fe_degree            = 2;
+  constexpr unsigned int fe_degree            = 3;
   // we also specify a number of points in the Gauss-Legendre quadrature formula we
   // want to use for the volume terms:
   constexpr unsigned int n_q_points_1d        = floor(1.5*fe_degree) + 1;
