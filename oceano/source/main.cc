@@ -36,8 +36,8 @@
 
 // First come the numerics. The following preprocessor select the time integrator. For
 // now we have coded general explicit schemes that belong to the family of Runge-Kutta scheme.
-#undef  TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-#define TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
+#define TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
+#undef  TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
 // The numerical flux (Riemann solver) at the faces between cells. For this
 // program, we have implemented a modified variant of the Lax--Friedrichs
 // flux and the Harten--Lax--van Leer (HLL) flux:
@@ -49,21 +49,20 @@
 // water simulation.
 #undef  ICBC_IMPULSIVEWAVE
 #undef  ICBC_SHALLOWWATERVORTEX
-#define  ICBC_SOLIDBODYROTATION
 #undef  ICBC_STOMMELGYRE
 #undef  ICBC_LAKEATREST
-#undef  ICBC_LAKEATRESTBIOLOGY
 #undef  ICBC_TRACERADVECTION
 #undef  ICBC_CHANNELFLOW
 #undef  ICBC_THACKEROSCILLATIONS2D
-#undef	ICBC_REALISTIC
+#define ICBC_PREYPREDATORADVECTION
+#undef  ICBC_REALISTIC
 // We have a few models: the base model are the shallow water equations. You can add the
 // computation of passive tracers or you can add a simple suspended sediment module or a
 // biological ones. Please select the number of tracers below.
-#undef MODEL_SHALLOWWATER
-#undef MODEL_SHALLOWWATERWITHTRACER
+#undef  MODEL_SHALLOWWATER
+#undef  MODEL_SHALLOWWATERWITHTRACER
 #undef  MODEL_SHALLOWWATERWITHSEDIMENT
-#define  MODEL_SHALLOWWATERWITHBIOLOGY
+#define MODEL_SHALLOWWATERWITHBIOLOGY
 // Next come the physics. With the following cpp keys one can switch between the different
 // formulations of a given term in the right-hand side of the shallow water equations.
 // For the bottom friction one has two formulations: a simple linear bottom friction and
@@ -189,20 +188,18 @@
 #include <icbc/Icbc_ImpulsiveWave.h>
 #elif defined ICBC_SHALLOWWATERVORTEX
 #include <icbc/Icbc_ShallowWaterVortex.h>
-#elif defined ICBC_SOLIDBODYROTATION
-#include <icbc/Icbc_ShallowWaterWithBiology.h>
 #elif defined ICBC_STOMMELGYRE
 #include <icbc/Icbc_StommelGyre.h>
 #elif defined ICBC_LAKEATREST
 #include <icbc/Icbc_LakeAtRest.h>
-#elif defined ICBC_LAKEATRESTBIOLOGY
-#include <icbc/Icbc_LakeAtRestBiology.h>
 #elif defined ICBC_TRACERADVECTION
 #include <icbc/Icbc_TracerAdvection.h>
 #elif defined ICBC_CHANNELFLOW
 #include <icbc/Icbc_ChannelFlow.h>
 #elif defined ICBC_THACKEROSCILLATIONS2D
 #include <icbc/Icbc_ThackerOscillations2d.h>
+#elif defined ICBC_PREYPREDATORADVECTION
+#include <icbc/Icbc_PreyPredatorAdvection.h>
 #elif defined ICBC_REALISTIC
 #include <icbc/Icbc_Realistic.h>
 #endif
@@ -219,11 +216,10 @@ namespace Problem
   using Number = double;
   // Besides the problem dimension, which is two, and polynomial degree we want to run with:
   constexpr unsigned int dimension            = 2;
-  constexpr unsigned int fe_degree            = 3;
+  constexpr unsigned int fe_degree            = 1;
   // we also specify a number of points in the Gauss-Legendre quadrature formula we
   // want to use for the volume terms:
   constexpr unsigned int n_q_points_1d        = floor(1.5*fe_degree) + 1;
-  // constexpr unsigned int n_q_points_1d        = 5;
   // The number of tracers:
   constexpr unsigned int n_tracers            = 2;
   // and the maximum number of iterations for the iterative method that invert the
@@ -235,9 +231,9 @@ namespace Problem
   // Next off is the choice of the time integrator scheme: please check the time integrator
   // class to see the list of all possible time integrators:
 #if defined TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_2;
+  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_3;
 #elif defined TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
-  constexpr TimeIntegrator::AdditiveRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_2;
+  constexpr TimeIntegrator::AdditiveRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_3;
 #endif
   //
   //
@@ -1694,13 +1690,9 @@ int main(int argc, char **argv)
       bc = new ICBC::BcImpulsiveWave<dimension, n_variables>(prm);
 #elif defined ICBC_SHALLOWWATERVORTEX
       bc = new ICBC::BcShallowWaterVortex<dimension, n_variables>(prm);
-#elif defined ICBC_SOLIDBODYROTATION
-      bc = new ICBC::BcShallowWaterVortex<dimension, n_variables>(prm);
 #elif defined ICBC_STOMMELGYRE
       bc = new ICBC::BcStommelGyre<dimension, n_variables>(prm);
 #elif defined ICBC_LAKEATREST
-      bc = new ICBC::BcLakeAtRest<dimension, n_variables>(prm);
-#elif defined ICBC_LAKEATRESTBIOLOGY
       bc = new ICBC::BcLakeAtRest<dimension, n_variables>(prm);
 #elif defined ICBC_TRACERADVECTION
       bc = new ICBC::BcTracerAdvection<dimension, n_variables>(prm);
@@ -1708,6 +1700,8 @@ int main(int argc, char **argv)
       bc = new ICBC::BcChannelFlow<dimension, n_variables>(prm);
 #elif defined ICBC_THACKEROSCILLATIONS2D
       bc = new ICBC::BcThackerOscillations2d<dimension, n_variables>(prm);
+#elif defined ICBC_PREYPREDATORADVECTION
+      bc = new ICBC::BcPreyPredatorAdvection<dimension, n_variables>(prm);
 #elif defined ICBC_REALISTIC
       bc = new ICBC::BcRealistic<dimension, n_variables>(prm);
 #else

@@ -15,8 +15,8 @@
  * Author: Luca Arpaia, 2023
  *         Giuseppe Orlando, 2026
  */
-#ifndef ICBC_SHALLOWWATERVORTEX_H
-#define ICBC_SHALLOWWATERVORTEX_H
+#ifndef ICBC_PREYPREDATORADVECTION_H
+#define ICBC_PREYPREDATORADVECTION_H
 
 #include <deal.II/base/function.h>
 // The following files include the oceano libraries
@@ -28,27 +28,17 @@
 namespace ICBC
 {
 
-  // The first test case is a compact shallow water travelling vortex (shortly RB-vortex)
-  // (Ricchiuto and Bollerman, 2008) which fulfills the shallow water equations
-  // with zero force term on the right hand side.
-  // The RB-vortex is $C^4$ in the depth but only $C^1$
-  // in the velocity. According to the classical interpolation estimate
-  // of finite element theory, we can expect only second order of convergence for
-  // the variables, included momentum. This vortex is thus suited to test second order schemes.
-  // We have also coded an extension of the RB-vortex to an arbitrary degree of smoothness,
-  // see (Ricchiuto and Torlo, 2021 arXiv:2109.10183v1). The implementation followed here
-  // is the same provided in the last reference for the degree of smoothness $p=2$.
-  // Other iterative corrections to improve the vortex smoothness and
-  // test higher then third order schemes can be readily implemented.
-  //
-  // Additionally you can add a tracer which is initalized as a linear function
-  // of $y$.
+  // The test is for the biological module. A background flow in solid rotation
+  // transports a square blob in which the prey and predator concentrations are
+  // at equilibrium. The time scale of the simulation matches the biological
+  // time scale.
 
   using namespace dealii;
 
   // We define constant parameters that help in the definition of the initial
-  // and boundary conditions. In the initial test case, the useful parameter is the angular vel
-  constexpr double omega = 0.5; // T = 2*pi/OMEGA = 2pi where OMEGA = 2 * omega in our case
+  // and boundary conditions. In the initial test case, the useful parameter is
+  // the angular velocity
+  constexpr double omega = 0.5; // T = 2*pi/|OMEGA| = 2pi where |OMEGA| = 2 * omega in our case
 
 
 
@@ -61,9 +51,9 @@ namespace ICBC
   					   // the public class Function of dealii
   {
   public:
-    ProblemData(IO::ParameterHandler &prm); // Costruttore, handles .prm via a type
+    ProblemData(IO::ParameterHandler &prm); // Constructor, handles .prm via a type
     					    // ParameterHandler
-    ~ProblemData() = default; // Distruttore
+    ~ProblemData() = default;               // Destructor
     // Methods
     // value method: gives back a double value, by reciving as input, vector value (p, component)
     // where p = point of space <dim>, component = component number in the vector
@@ -74,7 +64,7 @@ namespace ICBC
                          // defined, then use = 0, and in general override the value method in 
                          // Function
   };
-// Syntax to call methods from a class: NomeClasse :: NomeMethod
+  // Syntax to call methods from a class: NomeClasse :: NomeMethod
   template <int dim>
   ProblemData<dim>::ProblemData(IO::ParameterHandler &/*prm*/) // Here we are calling the 
   // constructor, notice that the syntax "/*prm*/" indicates that we need to call this due to the 
@@ -123,11 +113,18 @@ namespace ICBC
     {
       prm.enter_subsection("Physical constants");
       g = prm.get_double("g");
-      // omega = prm.get_double("omega"); // getter for angular velocity $/omega$
       prm.leave_subsection();
-      // std :: cout << "Helloworld!" << std :: endl;
+
+      prm.enter_subsection("Biological constants");
+      r = prm.get_double("prey_growth_rate");
+      K = prm.get_double("prey_capacity");
+      e = prm.get_double("predator_efficiency");
+      a = prm.get_double("predator_attack_rate");
+      tau = prm.get_double("predator_handling_time");
+      d = prm.get_double("predator_death_rate");
+      prm.leave_subsection();
     }
-    ~ExactSolution() = default; // default destroyer
+    ~ExactSolution() = default; // default destructor
 
     // Usual value method
     virtual double value(const Point<dim> & p,
@@ -135,56 +132,43 @@ namespace ICBC
 
   private:
     double g;
-    // double omega;
+    double r;    /*!<prey intrinsic growth rate */
+    double K;    /*!<prey carrying capacity */
+    double e;    /*!<predator conversion efficiency */
+    double a;    /*!<predator attack rate */
+    double tau;  /*!<handling time */
+    double d;    /*!<predator mortality rate */
   };
 
-  // We call the value method, evaluated at point "x" and "component"
+  // We call the value method, evaluated at point "x" and "component".
+  // The exact solution is the solid body rotation of a square blob. Inside
+  // the square prey and predator are computed from the (stable for now)
+  // equilibrium solution of the Rosenzweig-MacArthur model.
+  // We take advantage of deal.ii BoundingBox which works only for quadrilaterals
+  // aligned along the coordinate axis. Thus the point's coordinate "x" are
+  // transported back along the characterstic line. We ispect if the transported
+  // point follows within the initial square blob.
   template <int dim, int n_vars>
   double ExactSolution<dim, n_vars>::value(const Point<dim> & x,
                                            const unsigned int component) const
   {
-    // const double t = this->get_time();
-    // const double t = 0; // we do not need time since the vf is stationary
+    const double t = this->get_time();
     Assert(dim == 2, ExcNotImplemented());
-    
-    // Here we define the center (L_x,L_y) of the solid body rotation in [0,1]x[0,1]
+    Assert(n_vars == dim+3, ExcNotImplemented());
+
     Point<dim> x0;
-    // x0[0] = 0.5;
-    // x0[1] = 0.5;
     x0[0] = 2;
     x0[1] = 2;
-    // We found h to solve SW with this vector field:
-    // \begin{equation*}
-    // h(x,y) = h_c + \frac{2\omega^2}{g}
-    // \left[(x-x_0)^2 + (y-y_0)^2\right],
-    // \end{equation*}
-    // where h_c is the water depth at the center of the solid-body rotation.
-    // To choose h in supercritical, recall:
-    // Frud's number = Fr = ||u||/sqrt(gh), Fr < 1 sub-crit, Fr > 1 super-crit, Fr = 1 crit
-    // insert then the equalities for u and v.
-    // To have supercritical at the boundary, we find h < (2*omega^2*r^2)/g for r = 1/2 and so we
-    // find h_c < 1/(8*g)
-    // const double h_c = 0.4;
-    /*const double depth = h_c + (2. * omega * omega / g)
-                     * ((x[0] - x0[0]) * (x[0] - x0[0])
-                        + (x[1] - x0[1]) * (x[1] - x0[1]));
-                        */
-                        // h chosen to be in supercritical regime
     const double depth = 0.4;
     const double u     = -2 * omega * (x[1] - x0[1]);
     const double v     = +2 * omega * (x[0] - x0[0]);
-    const double r2 = (x[0]-1.5)*(x[0]-1.5) + (x[1]-1.5)*(x[1]-1.5);
-    const double sigma = 0.1; 
-    const double gaussian = std::exp(-r2/(2*sigma*sigma));
-    const double dx = x[0] - 1.0;
-const double R = 0.05;      // raggio del plateau
 
-double flat_gaussian;
+    const double theta = 2 * omega * t;
+    const double dx    = x[0] - x0[0];
+    const double dy    = x[1] - x0[1];
+    const double xr    = x0[0] + cos(theta) * dx + sin(theta) * dy;
+    const double yr    = x0[1] - sin(theta) * dx + cos(theta) * dy;
 
-    if (r2 <= R)
-      flat_gaussian = 1.0;
-    else
-      flat_gaussian = std::exp(-(r2-R)*(r2-R)/(2.0*sigma*sigma));
     Point<2> lower_left(1., 1.);
     Point<2> upper_right(1.6, 1.6);
     BoundingBox<2> bbox(std::make_pair(lower_left, upper_right));
@@ -195,22 +179,16 @@ double flat_gaussian;
     else if (component == 2)
       return v;
     else if (component == 3)
-      // return 0.1 * x[1];
-      if (bbox.point_inside(x,1e-6))
-      	return 0.8;
-	//return std::exp(-r2/(2.*0.2*0.2));
+      if (bbox.point_inside(Point<2>(xr, yr), 1e-6))
+        return d / ( a * (e-d*tau) );
       else
-      	return 0.;
-      //return 0.8*flat_gaussian;
-    else if (component == 4)
-      if (bbox.point_inside(x,1e-6))
-      	return 0.3;
-	//return std::exp(-r2/(2.*0.2*0.2));
+        return 0.;
+    else
+      if (bbox.point_inside(Point<2>(xr, yr), 1e-6))
+        return e*r * (a*K*(e-d*tau)-d) / ( a*a*K*(e-d*tau)*(e-d*tau) );
       else
-      	return 0.;    
-      //return std::exp(-r2/(2.*0.2*0.2));
-      //return 0.3*flat_gaussian;
-  };
+        return 0.;
+}
 
 
 
@@ -234,14 +212,14 @@ double flat_gaussian;
 
 
   template <int dim, int n_vars>
-  class BcShallowWaterVortex : public BcBase<dim, n_vars>
+  class BcPreyPredatorAdvection : public BcBase<dim, n_vars>
   {
   public:
 
-    BcShallowWaterVortex(IO::ParameterHandler &prm)
+    BcPreyPredatorAdvection(IO::ParameterHandler &prm)
       : prm(prm)
     {}
-    ~BcShallowWaterVortex() = default;
+    ~BcPreyPredatorAdvection() = default;
 
     void set_boundary_conditions() override;
 
@@ -250,7 +228,7 @@ double flat_gaussian;
   };
 
   template <int dim, int n_vars>
-  void BcShallowWaterVortex<dim, n_vars>::set_boundary_conditions()
+  void BcPreyPredatorAdvection<dim, n_vars>::set_boundary_conditions()
   {
     this->set_supercritical_inflow_boundary(
       1, std::make_unique<ExactSolution<dim, n_vars>>(0, prm));
@@ -264,4 +242,4 @@ double flat_gaussian;
     this->set_wall_boundary(0);
   }
 } // namespace ICBC
-#endif //ICBC_SHALLOWWATERVORTEX_H
+#endif //ICBC_PREYPREDATORADVECTION_H
