@@ -1,0 +1,44 @@
+# Listing of Parameters
+# ---------------------
+
+subsection Mesh & hp parameters
+  # Mesh filename in Gmsh format (v>=4.1, with extension)
+  set Mesh_filename = solidBodyRotation_20x10cells.msh
+
+  # Number of global mesh refinement steps applied to initial coarse grid
+  set Global_level_of_mesh_refinement = 0
+end
+
+subsection Time parameters
+  # Final time the simulation
+  set Final_time = 6.283185307
+  # Courant number
+  set CFL = 0.15
+end
+
+subsection Physical constants
+  # Wave speed
+  set g     = 9.81
+  # Horizontal viscosity coefficient
+  set horizontal_viscosity = 0.
+  # Horizontal diffusivity coefficient 
+  set horizontal_diffusivity = 0.005
+end
+
+subsection Biological constants
+  set prey_growth_rate       = 1.0
+  set prey_capacity          = 1.0
+  set predator_efficiency    = 0.5
+  set predator_attack_rate   = 1.0
+  set predator_handling_time = 0.5
+  set predator_death_rate    = 0.2
+end
+
+subsection Output parameters
+  # Name of the output file (without extension)
+  set Output_filename = solution
+  # Time interval to output the solution
+  set Solution_tick = 0.6283185307
+  # Flag if you wish to add the error field with respect to an exact solution
+  set Output_error = true
+end
