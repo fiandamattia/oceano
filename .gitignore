@@ -1,1 +1,19 @@
+# Build
 build/
+
+# Simulation output
+*.vtu
+
+# Local test directories
+tests/tracerAdvection/
+**/postproc/
+
+# Presentations and images
+*.pdf
+*.jpg
+
+# VS Code: keep debugging configuration
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.jsonbuild/

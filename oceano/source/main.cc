@@ -60,9 +60,9 @@
 // computation of passive tracers or you can add a simple suspended sediment module or a
 // biological ones. Please select the number of tracers below.
 #undef  MODEL_SHALLOWWATER
-#undef  MODEL_SHALLOWWATERWITHTRACER
+#undef MODEL_SHALLOWWATERWITHTRACER
 #undef  MODEL_SHALLOWWATERWITHSEDIMENT
-#define MODEL_SHALLOWWATERWITHBIOLOGY
+#define  MODEL_SHALLOWWATERWITHBIOLOGY
 // Next come the physics. With the following cpp keys one can switch between the different
 // formulations of a given term in the right-hand side of the shallow water equations.
 // For the bottom friction one has two formulations: a simple linear bottom friction and
@@ -88,8 +88,8 @@
 #undef  PHYSICS_DIFFUSIONCOEFFICIENTSMAGORINSKY
 // We end with the error estimate for AMR:
 #undef  HPOCEANO_ERRORHEIGHTGRADIENT
-#define HPOCEANO_ERRORVORTICITY
-#undef  HPOCEANO_ERRORTRACERGRADIENT
+#undef  HPOCEANO_ERRORVORTICITY
+#define HPOCEANO_ERRORTRACERGRADIENT
 #undef  HPOCEANO_ERRORBATHYMETRY
 #undef  HPOCEANO_ERRORFROMFILE
 //
@@ -761,6 +761,20 @@ namespace Problem
                                                 *oceano_operator.bc->problem_data,
                                                 estimated_error_per_cell);
 
+                                                
+      DataOut<dim>  data_out;
+
+      DataOutBase::VtkFlags flags;
+      data_out.set_flags(flags);
+
+      data_out.attach_triangulation(triangulation);
+      data_out.add_data_vector(estimated_error_per_cell, "error");
+      data_out.build_patches();
+
+      const std::string filename =
+        "grad_error.vtu";
+      data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+
       float max_error = estimated_error_per_cell.linfty_norm();
       max_error = Utilities::MPI::max(max_error, MPI_COMM_WORLD);
 
@@ -775,9 +789,9 @@ namespace Problem
       // necessary to make sure that no two cells are adjacent with a refinement level
       // differing with more than one.
       GridRefinement::refine(triangulation,
-        estimated_error_per_cell, hp_tuner.threshold_mesh_refinement * max_error);
+        estimated_error_per_cell, hp_tuner.threshold_mesh_refinement * max_error + 1e-12);
       GridRefinement::coarsen(triangulation,
-        estimated_error_per_cell, hp_tuner.threshold_mesh_coarsening * max_error);
+        estimated_error_per_cell, hp_tuner.threshold_mesh_coarsening * max_error + 1e-12);
 
       // We enforce bounds on maximum and minimum mesh levels with the following lines.
       // The minimum mesh level is the number of global refinement while the maximum
@@ -1658,19 +1672,22 @@ namespace Problem
 // and `MPI_Finalize()`, which we do through the
 // Utilities::MPI::MPI_InitFinalize data structure. Note that we run the program
 // only with MPI, and set the thread count to 1.
-int main(int argc, char **argv)
+int main(int argc, char **argv) // Number or arguments and the arguments themselves are passed to the main function
 {
-  using namespace Problem;
+  // namespaces are used to avoid writing the full syntaxof the classes and functions
+  // ex: `dealii::Utilities::MPI::MPI_InitFinalize` becomes `Utilities::MPI::MPI_InitFinalize`
+  using namespace Problem; // Problem is a namespace that contains the class OceanoProblem and the main function
   using namespace dealii;
 
-  Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
+  Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1); // Initialize MPI with 1 thread per process
 
   try
     {
-      deallog.depth_console(0);
+      deallog.depth_console(0); // Set the depth of console output to the lowest possible, so only the
+                                // most important information is printed to the console.
 
       // We define `CommandLineParser` objects that parse the command line
-      IO::CommandLineParser prs;
+      IO::CommandLineParser prs; // prs is an object of the class CommandLineParser, defined in the namespace IO
       prs.parse_command_line(argc, argv);
 
       // We define `ParameterHandler` and `ParameterReader` objects, and let the latter

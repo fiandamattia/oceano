@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug OCEANO",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/oceano/oceano",
+            "args": [
+                "-i",
+                "${fileBasename}"
+            ],
+            "cwd": "${fileDirname}",
+            "stopAtEntry": false,
+            "MIMode": "gdb"
+        }
+    ]
+}

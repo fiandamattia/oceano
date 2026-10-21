@@ -25,26 +25,28 @@
 namespace IO
 {
 
-  using namespace dealii;
+  using namespace dealii; // usual namespace for deal.II programs
 
 
   
   // The next class is responsible for parsing correctly the command line.
+  // parsing means to check that the user has provided the correct number of arguments and
+  // that the arguments are correct.
   class CommandLineParser
   {
-  public:
+  public: // recall: public members are accessible from outside the class
     CommandLineParser() = default;
     ~CommandLineParser() = default;
 
     void parse_command_line(int argc, char **argv);
 
-  private:
+  private: // recall: private members are accessible only from inside the class
     void usage();
   };
 
 
 
-  void CommandLineParser::usage()
+  void CommandLineParser::usage() // usage is a private method containing the "error usage" message to be printed in case of wrong command line usage
   {
     std::cout << "Oceano usage:" << std::endl;
     std::cout << " -i   --input <file>    :"
@@ -57,16 +59,18 @@ namespace IO
   // The function `parse_command_line` does not output anything. It just
   // raises messages errors and exit the program in case of wrong usage
   // of the executable.
+  // We expect three arguments: the name of the executable, the option -i or --input and the name of the configuration file.
+  // index start from 0, so the first argument is argv[0], the second is argv[1] and the third is argv[2].
   void CommandLineParser::parse_command_line(int argc, char **argv)
   {
-    if (argc == 1)
+    if (argc == 1) // only the name of the executable is provided, no other arguments are given
       {
         usage();
         AssertThrow(false,
                     ExcMessage("No configuration file was given.\n"
                                "Check again your command line."));
       }
-    std::string option(argv[1]);
+    std::string option(argv[1]); // argument 1 is the option, either -i or --input or -h or --help
     if ( option == "-h" || option == "--help" )
       {
         usage();
@@ -74,7 +78,7 @@ namespace IO
       }
     else if ( option == "-i" || option == "--input" )
       {
-        if (argc == 2)
+        if (argc == 2) // the option -i or --input is given, but no configuration file is provided
           {
             usage();
             AssertThrow(false,
