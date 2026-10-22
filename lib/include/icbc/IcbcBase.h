@@ -41,6 +41,14 @@ namespace ICBC
   // dimensions, we template the icbc class.
   // The base class is overridden by derived classes which contain the
   // boundary conditions specific to each test case.
+
+  // For example, we willd define a bc class of shallow water votrex as:
+  // class BcShallowWaterVortex : public BcBase<dim, n_vars>
+  // i.e. a boundary condition class specific to the SW vortex case, derived from the general BcBase
+  // So the BcBase class is a base class to define the interface of how to set the boundary conditions,
+  // while the derived classes will implement the specific boundary conditions for each test case.
+  // But the operative part is implemented elsewhere, in the `OceanoProblem` class
+
   template <int dim, int n_vars>
   class BcBase
   {
@@ -62,6 +70,25 @@ namespace ICBC
     // memory leaks with dynamic allocation. No other pointer should point
     // to its managed object. For this reason we will see that these particular
     // pointers cannot be copied but they can only be moved with `std::move()`
+
+    // map: standard class and associates a key with a value. The key is the boundary_id and the value is a pointer to a Function
+    // Function: class of deal.II that represents a function of space and time, with a given number of components
+    // boundary_id: class of deal.II that represents a boundary id, which is an unsigned integer. Used to indentify different kinds of boundaries
+
+    // Boundary conditions depend on the sign of the characteristic speeds
+    // (eigenvalues of the flux Jacobian along the outward normal):
+    //
+    // lambda < 0: Incoming characteristic. Information enters the domain
+    //             and must be prescribed through boundary conditions.
+    //
+    // lambda > 0: Outgoing characteristic. Information leaves the domain
+    //             and is determined by the interior solution.
+    //
+    // lambda = 0: Characteristic tangent to the boundary (special case).
+    //
+    // The number of boundary conditions to prescribe equals the number
+    // of incoming characteristics (for a non-characteristic boundary).
+
     std::map<types::boundary_id, std::unique_ptr<Function<dim>>>
                                    supercritical_inflow_boundaries;
     std::map<types::boundary_id, std::unique_ptr<Function<dim>>>
@@ -72,9 +99,13 @@ namespace ICBC
                                    discharge_inflow_boundaries;
     std::map<types::boundary_id, std::unique_ptr<Function<dim>>>
                                    absorbing_outflow_boundaries;
+    // The wall boundaries are the only ones that do not require a Function, because we do not use
+    // a function to impose the boundary condition. Imposing the normal velocity at 0 (no passage) resulting
+    // in a normal inverted velocity.
     std::set<types::boundary_id>   wall_boundaries;
 
-    std::unique_ptr<Function<dim>> problem_data;
+    std::unique_ptr<Function<dim>> problem_data; // problem_data is a pointer to a Function, representing the problem data
+                                                 // such as bathymetry, friction, wind, etc.
 
     // The subsequent four member functions are the ones that fill the boundary
     // containers. They must be called from outside to specify the various types
@@ -94,6 +125,8 @@ namespace ICBC
     // conditions determine the content of the AffineConstraints object that is
     // sent into MatrixFree for initialization, thus requiring to be set before
     // the initialization of the matrix-free data structures.
+
+    // Declaration of the methods of the class.
     void set_supercritical_inflow_boundary(
       const types::boundary_id       boundary_id,
       std::unique_ptr<Function<dim>> inflow_function);
@@ -123,6 +156,10 @@ namespace ICBC
     // In the boundary condition function the user defines the
     // composition of the boundary, that is for each boundary id a boundary condition
     // among the members defined above must be provided.
+
+    // Meaning that the user will define via an object set_boundary_conditions() the boundary conditions for each boundary id
+    // the function itself is virtual and it is overridden in the derived classes, so if it's not overridden
+    // it will print the written error message.
     virtual void set_boundary_conditions()
     {
       std::cout << "ERROR in set_boundary_conditions()"
@@ -138,11 +175,15 @@ namespace ICBC
   // ensure that boundary conditions are mutually exclusive on the various
   // parts of the boundary, i.e., that a user does not accidentally designate a
   // boundary as both an inflow and say a supercritical outflow boundary.
-  template <int dim, int n_vars>
+  template <int dim, int n_vars> // template allows to define the class for a generic dim and n_vars
+                                 // which are set in compile time.
   void BcBase<dim, n_vars>::set_supercritical_inflow_boundary(
     const types::boundary_id       boundary_id,
     std::unique_ptr<Function<dim>> inflow_function)
   {
+    // We assert the the boundary_id is not already used for another type of boundary condition.
+    // This is done by looking for the boundary_ide in the other boundary conditions maps and checking if what
+    // we get is the end of the map, meaning that the boundary_id is not present in the map.
     AssertThrow(supercritical_outflow_boundaries.find(boundary_id) ==
                     supercritical_outflow_boundaries.end() &&
                 height_inflow_boundaries.find(boundary_id) ==
@@ -156,10 +197,12 @@ namespace ICBC
                            std::to_string(static_cast<int>(boundary_id)) +
                            " to another type of boundary before now setting " +
                            "it as supercritical inflow"));
+    // We assert the the number of components (attribute n_components) of the function is equal to n_vars
+    // object->attribute is the syntax to access the attribute of an object in C++.
     AssertThrow(inflow_function->n_components == n_vars,
                 ExcMessage("Expected function with n_vars components"));
-
-    supercritical_inflow_boundaries[boundary_id] = std::move(inflow_function);
+    // We transfer the ownership of the pointer to the map `supercritical_inflow_boundaries` with the key `boundary_id`.
+    supercritical_inflow_boundaries[boundary_id] = std::move(inflow_function); // move is used for the unique_ptr
   }
 
 
@@ -285,6 +328,7 @@ namespace ICBC
     wall_boundaries.insert(boundary_id);
   }
 
+  // problem_data is a case dependent function that contains the problem data, such as bathymetry, friction, wind, etc.
   // The next member composes all the external data that we need to solve the
   // problem. Problem data is case dependent; for this reason it appears inside
   // the `ICBC` namespace. The data in general depends on both time and space.
@@ -305,7 +349,7 @@ namespace ICBC
   void BcBase<dim, n_vars>::set_problem_data(
     std::unique_ptr<Function<dim>> problem_data)
   {
-    AssertDimension(problem_data->n_components, dim+3);
+    AssertDimension(problem_data->n_components, dim+3); // we assert its right size, i.e. dim+3=5
 
     this->problem_data = std::move(problem_data);
   }

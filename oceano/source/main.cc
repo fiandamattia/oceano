@@ -1689,13 +1689,18 @@ int main(int argc, char **argv) // Number or arguments and the arguments themsel
       // We define `CommandLineParser` objects that parse the command line
       IO::CommandLineParser prs; // prs is an object of the class CommandLineParser, defined in the namespace IO
       prs.parse_command_line(argc, argv);
+      // argv is composed by:
+      // argv[0] = name of the executable
+      // argv[1] = name of the parameter file
+      // argv[2] = name of the configuration file (.prm)
 
+      // ParameterHandler and ParameterReader are classes of dealii
       // We define `ParameterHandler` and `ParameterReader` objects, and let the latter
       // read in the parameter values from a configuration textfile. The values so
       // read are then handed over to an instance of the OceanoProblem class:
-      IO::ParameterHandler prm;
-      IO::ParameterReader  param(prm);
-      param.read_parameters(argv[2]);
+      IO::ParameterHandler prm; // prm is object of class ParameterHandler, defined in the namespace IO
+      IO::ParameterReader  param(prm); // param is an object of class ParameterReader
+      param.read_parameters(argv[2]); // read the parameters from the .prm file and store them in param
 
       // The boundary condition class is the only class declared as a pointer.
       // This is because we want to realize run-time polymrophism. In the base class
@@ -1703,11 +1708,13 @@ int main(int argc, char **argv) // Number or arguments and the arguments themsel
       // Next, the pointer is allocated as a derived class specific
       // to the test-case which will override the boundary conditions.
       // The pointer is easily pass as argument to the `OceanoProblem` class.
-      ICBC::BcBase<dimension, n_variables> *bc;
+      ICBC::BcBase<dimension, n_variables> *bc; // bc is a pointer to the base class of boundary conditions
       // The switch between the different test-cases is realized with Preprocessor keys.
       // The choice to use a Preprocessor also for the boundary conditions is because we
       // use it for the initial condition and we have mantained the same directive 
       // to easily switch both initial and boundary conditions depending on the test-case.
+
+      // Note that in Debugging, preprocessor inactive directives are not evaluated, completely skipped
 #if defined ICBC_IMPULSIVEWAVE
       bc = new ICBC::BcImpulsiveWave<dimension, n_variables>(prm);
 #elif defined ICBC_SHALLOWWATERVORTEX
