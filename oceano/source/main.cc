@@ -294,10 +294,10 @@ namespace Problem
   {
   public:
     OceanoProblem(IO::ParameterHandler           &,
-                  ICBC::BcBase<dim, 1+dim+n_tra> *bc);
+                  ICBC::BcBase<dim, 1+dim+n_tra> *bc); // dim is the dimension of the problem, 1+dim+n_tra is the number of prognostic variables
     ~OceanoProblem() = default;
 
-    void run();
+    void run(); // public method to run the simulation, it puts together all the private methods to run the simulation
 
   private:
     void make_grid();
@@ -345,6 +345,8 @@ namespace Problem
 
     double time, time_step;
 
+   // Postprocessor class regulates the output of the solution and of the postprocessed variables. Not fundamental
+   // to study at the moment, but it is important to understand how to use it. It is a class that is defined inside the OceanoProblem class.
    public:
     class Postprocessor
     {
