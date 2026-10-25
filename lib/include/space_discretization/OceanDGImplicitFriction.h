@@ -181,7 +181,7 @@ namespace SpaceDiscretization
               q);
 
             phi_discharge.submit_value(
-              model.source_nonstiff(z_q, q_q, dz_q, zb_q, data_onthefly_q),
+              model.source_no_friction(z_q, q_q, dz_q, zb_q, data_onthefly_q),
               q);
           }
 
@@ -191,10 +191,6 @@ namespace SpaceDiscretization
       }
   }
 
-  // The face and boundary operators are non-stiff and identical to
-  // those of the base class. However, we redefine them here so that the
-  // `loop()` function can be used with this class and member function
-  // pointers, avoiding lambdas.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorImplicitFriction<dim, n_tra, degree, n_points_1d>::
   local_apply_cell_stiff_discharge(
@@ -222,7 +218,7 @@ namespace SpaceDiscretization
             const auto cf_q = data_quadrature_cell_0.get_data(cell, q)[1];
 
             phi_discharge.submit_value(
-              model.source_stiff(z_q, q_q, zb_q, cf_q),
+              model.source_friction(z_q, q_q, zb_q, cf_q),
               q);
           }
 
@@ -231,6 +227,10 @@ namespace SpaceDiscretization
       }
   }
 
+  // The face and boundary operators are non-stiff and identical to
+  // those of the base class. However, we redefine them here so that the
+  // `loop()` function can be used with this class and member function
+  // pointers, avoiding lambdas.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorImplicitFriction<dim, n_tra, degree, n_points_1d>::
   local_apply_face_nonstiff_discharge(
@@ -485,6 +485,12 @@ namespace SpaceDiscretization
     const bool is_last_stage_implicit = factor_matrix > 0.;
 
     {
+      // After having update the current time, we compute the current
+      // residuals, the stiff and non stiff ones, each one with its own
+      // `local_apply` operators. Note that, in case of final explicit stage,
+      // all the resiudal are evaluated with the same weights and we can use
+      // only one residual, saving some memory. This should explain the different
+      // code path in case of time integrator with a last stage that is explicit.
       TimerOutput::Scope t(timer, "rk_stage hydro - integrals L_h");
 
       for (auto &i : bc->supercritical_inflow_boundaries)

@@ -200,13 +200,16 @@ namespace Model
         const Tensor<1, dim+1, Number> &data) const;
 
     // For ImEx time integration strategy, we separate the source term in a stiff and
-    // a non-stiff part. For now the stiff part of the source term is only the bottom friction.
-    // If a realistic Manning model is used, the bottom friction term may become very large in
-    // shallow area and an extremely small time step would be necessary to integrate it.
+    // a non-stiff part.
+    // If a realistic Manning model is used, the bottom friction term may become
+    // very large in shallow area and an extremely small time step would be necessary to
+    // integrate it. Also gravity waves are very fast and can lead to restrictive time
+    // steps for coastal simulations. For this reason the stiff parts of the source term
+    // are the bottom friction and pressure gradient.
     template <int dim, typename Number>
     inline DEAL_II_ALWAYS_INLINE //
       Tensor<1, dim, Number>
-      source_nonstiff(
+      source_no_friction(
         const Number                    height,
         const Tensor<1, dim, Number>   &discharge,
         const Tensor<1, dim, Number>   &gradient_height,
@@ -216,11 +219,28 @@ namespace Model
     template <int dim, typename Number>
     inline DEAL_II_ALWAYS_INLINE //
       Tensor<1, dim, Number>
-      source_stiff(
+      source_no_pressure_no_friction(
+        const Tensor<1, dim, Number>   &discharge,
+        const Tensor<1, dim+1, Number> &data) const;
+
+    template <int dim, typename Number>
+    inline DEAL_II_ALWAYS_INLINE //
+      Tensor<1, dim, Number>
+      source_friction(
         const Number                  height,
         const Tensor<1, dim, Number> &discharge,
         const Number                  bathymetry,
         const Number                  drag_coefficient) const;
+
+    template <int dim, typename Number>
+    inline DEAL_II_ALWAYS_INLINE //
+      Tensor<1, dim, Number>
+      source_pressure_and_friction(
+        const Number                    height,
+        const Tensor<1, dim, Number>   &discharge,
+        const Tensor<1, dim, Number>   &gradient_height,
+        const Number                    bathymetry,
+        const Number                    drag_coefficient) const;
 
     // The next function computes an estimate of the square of the graivty wave speed, from
     // the vector of conserved variables
@@ -439,7 +459,7 @@ namespace Model
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
-    ShallowWater::source_nonstiff(
+    ShallowWater::source_no_friction(
       const Number                    height,
       const Tensor<1, dim, Number>   &discharge,
       const Tensor<1, dim, Number>   &gradient_height,
@@ -464,7 +484,18 @@ namespace Model
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
-    ShallowWater::source_stiff(
+    ShallowWater::source_no_pressure_no_friction(
+      const Tensor<1, dim, Number>   &discharge,
+      const Tensor<1, dim+1, Number> &data) const
+  {
+    return wind_stress.source<dim, Number>(&data[0])
+           + coriolis_force.source<dim, Number>(discharge, data[2]);
+  }
+
+  template <int dim, typename Number>
+  inline DEAL_II_ALWAYS_INLINE //
+    Tensor<1, dim, Number>
+    ShallowWater::source_friction(
       const Number                  height,
       const Tensor<1, dim, Number> &discharge,
       const Number                  bathymetry,
@@ -475,6 +506,24 @@ namespace Model
     const Number h = depth(height, bathymetry);
 
     return -bottom_friction.source<dim, Number>(v, drag_coefficient, h);
+  }
+
+  template <int dim, typename Number>
+  inline DEAL_II_ALWAYS_INLINE //
+    Tensor<1, dim, Number>
+    ShallowWater::source_pressure_and_friction(
+      const Number                    height,
+      const Tensor<1, dim, Number>   &discharge,
+      const Tensor<1, dim, Number>   &gradient_height,
+      const Number                    bathymetry,
+      const Number                    drag_coefficient) const
+  {
+    const Tensor<1, dim, Number> v =
+      velocity<dim>(height, discharge, bathymetry);
+    const Number h = depth(height, bathymetry);
+
+    return - g * h * gradient_height
+           - bottom_friction.source<dim, Number>(v, drag_coefficient, h);
   }
 
   template <typename Number>
