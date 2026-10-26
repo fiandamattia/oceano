@@ -57,6 +57,12 @@ namespace SpaceDiscretization
       const unsigned int         max_iteration_height);
     ~OceanoOperatorSemiImplicit() = default;
 
+    void local_apply_cell_height(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &cell_range) const;
+
     void local_apply_cell_nonstiff_discharge(
       const MatrixFree<dim, Number>                                 &data,
       LinearAlgebra::distributed::Vector<Number>                    &dst,
@@ -69,13 +75,37 @@ namespace SpaceDiscretization
       const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
       const std::pair<unsigned int, unsigned int>                   &cell_range) const;
 
+    void local_apply_face_height(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &face_range) const;
+
     void local_apply_face_nonstiff_discharge(
       const MatrixFree<dim, Number>                                 &data,
       LinearAlgebra::distributed::Vector<Number>                    &dst,
       const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
       const std::pair<unsigned int, unsigned int>                   &face_range) const;
 
+    void local_apply_face_stiff_discharge(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &face_range) const;
+
+    void local_apply_boundary_face_height(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &face_range) const;
+
     void local_apply_boundary_face_nonstiff_discharge(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &face_range) const;
+
+    void local_apply_boundary_face_stiff_discharge(
       const MatrixFree<dim, Number>                                 &data,
       LinearAlgebra::distributed::Vector<Number>                    &dst,
       const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
@@ -132,14 +162,41 @@ namespace SpaceDiscretization
 
 
   // For an implicit-explicit (IMEX) scheme, the right-hand side must be
-  // partitioned into a stiff part and a non-stiff part. Here, the stiff part
+  // partitioned into a stiff part and a non-stiff part. The stiff part
   // appears only in the momentum equation, namely the bottom friction term;
   // the non-stiff part is what is left. Since the bottom friction term is a
   // local operator, only a local cell-wise apply is needed for the stiff
   // part.
-  //
-  // For the continuity equation, we reuse the apply function of the base
-  // class, since nothing changes there.
+  // For the continuity equation, we copies the apply the cell apply
+  // function of the base class, since nothing changes there. Neverthless we
+  // have to reimplement it, to be used in the cell_loop.
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_cell_height(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &cell_range) const
+  {
+    FEEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data,cell_range,0);
+    FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data,cell_range,1);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        phi_height.reinit(cell);
+        phi_discharge.reinit(cell);
+        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
+
+        for (unsigned int q = 0; q < phi_height.n_q_points; ++q)
+          phi_height.submit_gradient(
+            model.mass_flux(phi_discharge.get_value(q)),
+            q);
+
+        phi_height.integrate_scatter(EvaluationFlags::gradients,
+                                       dst);
+      }
+  }
+
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_cell_nonstiff_discharge(
@@ -157,7 +214,7 @@ namespace SpaceDiscretization
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         phi_height.reinit(cell);
-        phi_height.gather_evaluate(src[0], EvaluationFlags::values | EvaluationFlags::gradients);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values);
         phi_discharge.reinit(cell);
         phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
         phi_velocity.reinit(cell);
@@ -170,7 +227,6 @@ namespace SpaceDiscretization
         for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
           {
             const auto z_q = phi_height.get_value(q);
-            const auto dz_q = phi_height.get_gradient(q);
             const auto q_q = phi_discharge.get_value(q);
             const auto du_q = phi_velocity.get_gradient(q);
             const auto point_q = phi_discharge.quadrature_point(q);
@@ -185,7 +241,7 @@ namespace SpaceDiscretization
               q);
 
             phi_discharge.submit_value(
-              model.source_nonstiff(z_q, q_q, dz_q, zb_q, data_onthefly_q),
+              model.source_no_pressure_no_friction(q_q, data_onthefly_q),
               q);
           }
 
@@ -195,10 +251,6 @@ namespace SpaceDiscretization
       }
   }
 
-  // The face and boundary operators are non-stiff and identical to
-  // those of the base class. However, we redefine them here so that the
-  // `loop()` function can be used with this class and member function
-  // pointers, avoiding lambdas.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_cell_stiff_discharge(
@@ -213,25 +265,88 @@ namespace SpaceDiscretization
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         phi_height.reinit(cell);
-        phi_height.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values | EvaluationFlags::gradients);
         phi_discharge.reinit(cell);
         phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
 
         for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
           {
-            const auto q_q = phi_discharge.get_value(q);
             const auto z_q = phi_height.get_value(q);
+            const auto dz_q = phi_height.get_gradient(q);
+            const auto q_q = phi_discharge.get_value(q);
 
             const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0];
             const auto cf_q = data_quadrature_cell_0.get_data(cell, q)[1];
 
             phi_discharge.submit_value(
-              model.source_stiff(z_q, q_q, zb_q, cf_q),
+              model.source_pressure_and_friction(z_q, q_q, dz_q, zb_q, cf_q),
               q);
           }
 
         phi_discharge.integrate_scatter(EvaluationFlags::values,
                                        dst);
+      }
+  }
+
+  // Within this class we also reimplement the face operators, which differ
+  // from those of the base class. In fact, unlike the base class, we need
+  // the numerical mass flux computed with a centered flux. The centered flux
+  // is so simple that it is hard-coded in the body of the apply operator,
+  // together with its hydrostatic reconstruction. Since the pressure term is
+  // treated implicitly, we define both stiff and non-stiff face and boundary
+  // operators: the non-stiff operator contains the numerical advective
+  // fluxes, while the stiff one implements the pressure fluxes.
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_face_height(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_m(data, face_range,
+                                                                      true, 0, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_p(data, face_range,
+                                                                      false, 0, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, dim, Number> phi_discharge_m(data, face_range,
+                                                                      true, 1, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, dim, Number> phi_discharge_p(data, face_range,
+                                                                      false, 1, 1);
+
+    for (unsigned int face = face_range.first; face < face_range.second; ++face)
+      {
+        phi_height_p.reinit(face);
+        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_discharge_p.reinit(face);
+        phi_discharge_p.gather_evaluate(src[1], EvaluationFlags::values);
+
+        phi_height_m.reinit(face);
+        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_discharge_m.reinit(face);
+        phi_discharge_m.gather_evaluate(src[1], EvaluationFlags::values);
+
+        for (unsigned int q = 0; q < phi_height_m.n_q_points; ++q)
+          {
+            const auto z_m    = phi_height_m.get_value(q);
+            const auto z_p    = phi_height_p.get_value(q);
+            const auto normal = phi_discharge_m.normal_vector(q);
+            const auto zb_m   = data_quadrature_face.get_data(face, 2*q);
+            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);
+
+            const auto v_m = model.velocity(z_m, phi_discharge_m.get_value(q), zb_m);
+            const auto v_p = model.velocity(z_p, phi_discharge_p.get_value(q), zb_p);
+            const auto zb_star = std::min(zb_m, zb_p);
+            const auto flux_m = model.depth(z_m, zb_star) * v_m;
+            const auto flux_p = model.depth(z_p, zb_star) * v_p;
+
+            auto numerical_flux_p = 0.5 * (flux_m * normal + flux_p * normal);
+
+            phi_height_m.submit_value(-numerical_flux_p, q);
+            phi_height_p.submit_value(numerical_flux_p, q);
+          }
+
+        phi_height_p.integrate_scatter(EvaluationFlags::values, dst);
+        phi_height_m.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -280,16 +395,59 @@ namespace SpaceDiscretization
                                               normal,
                                               zb_m,
                                               zb_p);
-            auto numerical_flux_m = -numerical_flux_p;
 
-            numerical_flux_m -=
-              num_flux.numerical_presflux_strong(z_m,
+            phi_discharge_m.submit_value(-numerical_flux_p, q);
+            phi_discharge_p.submit_value(numerical_flux_p, q);
+          }
+
+        phi_discharge_p.integrate_scatter(EvaluationFlags::values, dst);
+        phi_discharge_m.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_face_stiff_discharge(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_m(data, face_range,
+                                                                      true, 0, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_p(data, face_range,
+                                                                      false, 0, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, dim, Number> phi_discharge_m(data, face_range,
+                                                                      true, 1, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, dim, Number> phi_discharge_p(data, face_range,
+                                                                      false, 1, 1);
+
+    for (unsigned int face = face_range.first; face < face_range.second; ++face)
+      {
+        phi_height_p.reinit(face);
+        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_discharge_p.reinit(face);
+
+        phi_height_m.reinit(face);
+        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_discharge_m.reinit(face);
+
+        for (unsigned int q = 0; q < phi_discharge_m.n_q_points; ++q)
+          {
+            const auto z_m    = phi_height_m.get_value(q);
+            const auto z_p    = phi_height_p.get_value(q);
+            const auto normal = phi_discharge_m.normal_vector(q);
+            const auto zb_m   = data_quadrature_face.get_data(face, 2*q);
+            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);
+
+            auto numerical_flux_m =
+              -num_flux.numerical_presflux_strong(z_m,
                                                  z_p,
                                                  normal,
                                                  zb_m,
                                                  zb_p);
-            numerical_flux_p +=
-              num_flux.numerical_presflux_strong(z_p,
+            auto numerical_flux_p =
+               num_flux.numerical_presflux_strong(z_p,
                                                  z_m,
                                                  normal,
                                                  zb_p,
@@ -301,6 +459,59 @@ namespace SpaceDiscretization
 
         phi_discharge_p.integrate_scatter(EvaluationFlags::values, dst);
         phi_discharge_m.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  // Similar argument applies to the boundary operators, which must be
+  // reimplemented as follows:
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_boundary_face_height(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data, face_range, true, 0);
+    FEFaceEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data, face_range, true, 1);
+
+    for (unsigned int face = face_range.first; face < face_range.second; ++face)
+      {
+        phi_height.reinit(face);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_discharge.reinit(face);
+        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
+
+        for (unsigned int q = 0; q < phi_height.n_q_points; ++q)
+          {
+            const auto z_m    = phi_height.get_value(q);
+            const auto q_m    = phi_discharge.get_value(q);
+            const auto normal = phi_height.normal_vector(q);
+            const auto point  = phi_height.quadrature_point(q);
+            const auto zb_m   =
+              data_quadrature_boundary.get_data(face-data.n_inner_face_batches(), q);
+
+            VectorizedArray<Number> z_p;
+            Tensor<1, dim, VectorizedArray<Number>> q_p;
+            bool at_outflow;
+
+            const auto boundary_id = data.get_boundary_id(face);
+
+            Base::get_boundary_value(
+              boundary_id, z_m, q_m, normal, point, zb_m, &z_p, q_p, &at_outflow);
+
+            const auto v_m = model.velocity(z_m, q_m, zb_m);
+            const auto v_p = model.velocity(z_p, q_p, zb_m);
+            const auto zb_star = std::min(zb_m, zb_m);
+            const auto flux_m = model.depth(z_m, zb_star) * v_m;
+            const auto flux_p = model.depth(z_p, zb_star) * v_p;
+
+            auto flux = 0.5 * (flux_m * normal + flux_p * normal);
+
+            phi_height.submit_value(-flux, q);
+          }
+
+        phi_height.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -343,9 +554,60 @@ namespace SpaceDiscretization
             auto flux =
               num_flux.numerical_advflux_weak(z_m, z_p, q_m, q_p, normal, zb_m, zb_m);
 
-            auto pressure_numerical_fluxes =
+            if (at_outflow)
+              for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
+                {
+                  auto rho_u_dot_n = q_m * normal;
+                  if (rho_u_dot_n[v] < -1e-12)
+                    for (unsigned int d = 0; d < dim; ++d)
+                      flux[d][v] = 0.;
+                }
+
+            phi_discharge.submit_value(-flux, q);
+          }
+
+        phi_discharge.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_boundary_face_stiff_discharge(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data, face_range, true, 0);
+    FEFaceEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data, face_range, true, 1);
+
+    for (unsigned int face = face_range.first; face < face_range.second; ++face)
+      {
+        phi_height.reinit(face);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_discharge.reinit(face);
+        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
+
+        for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
+          {
+            const auto z_m    = phi_height.get_value(q);
+            const auto q_m    = phi_discharge.get_value(q);
+            const auto normal = phi_discharge.normal_vector(q);
+            const auto point  = phi_height.quadrature_point(q);
+            const auto zb_m   =
+              data_quadrature_boundary.get_data(face-data.n_inner_face_batches(), q);
+
+            VectorizedArray<Number> z_p;
+            Tensor<1, dim, VectorizedArray<Number>> q_p;
+            bool at_outflow;
+
+            const auto boundary_id = data.get_boundary_id(face);
+
+            Base::get_boundary_value(
+              boundary_id, z_m, q_m, normal, point, zb_m, &z_p, q_p, &at_outflow);
+
+            auto flux =
               num_flux.numerical_presflux_strong(z_m, z_p, normal, zb_m, zb_m);
-            flux += pressure_numerical_fluxes;
 
             if (at_outflow)
               for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
@@ -452,8 +714,10 @@ namespace SpaceDiscretization
   // step that is not restricted by gravity wave speed or bottom friction coefficient.
   // This is obtained by treating semi-implicitly the mass flux term in the
   // continuity equation, the pressure gradient term and the bottom friction term
-  // in the momentum equation. The hydrodynamic system is solved using the Schur
-  // complement which is accomplished in three steps: 1/ an explicit update of the
+  // in the momentum equation.
+  //
+  // The hydrodynamic system is solved using the Schur complement tecnique
+  // which is accomplished in three steps: 1/ an explicit update of the
   // discharge 2/ the solution of the discrete wave equation. 3/ the correction
   // of the discharge.
   template <int dim, int n_tra, int degree, int n_points_1d>
@@ -475,6 +739,14 @@ namespace SpaceDiscretization
     const bool is_last_stage_implicit = factor_matrix > 0.;
 
     {
+      // After updating the current time, we compute the current residuals.
+      // The residual of the continuity equation is treated implicitly, and we
+      // reuse the base-class operators. The residual of the momentum equation
+      // is evaluated for both the explicit and the implicit parts.
+      // Note that, in the case of a final explicit stage, the explicit and
+      // implicit residuals are evaluated with the same weights, so we can store
+      // a single residual and save some memory. This explains the different
+      // code path for a time integrator whose last stage is explicit.
       TimerOutput::Scope t(timer, "rk_stage hydro - integrals L_h");
 
       for (auto &i : bc->supercritical_inflow_boundaries)
@@ -522,12 +794,16 @@ namespace SpaceDiscretization
                 true,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values);
-          data.cell_loop(
+          data.loop(
                 &OceanoOperatorSemiImplicit::local_apply_cell_stiff_discharge,
+                &OceanoOperatorSemiImplicit::local_apply_face_stiff_discharge,
+                &OceanoOperatorSemiImplicit::local_apply_boundary_face_stiff_discharge,
                 this,
                 vec_ki_discharge[2*current_stage+2],
                 current_ri,
-                true);
+                true,
+                MatrixFree<dim, Number>::DataAccessOnFaces::values,
+                MatrixFree<dim, Number>::DataAccessOnFaces::values);
         }
     }
 
@@ -536,7 +812,10 @@ namespace SpaceDiscretization
       TimerOutput::Scope t(timer, "rk_stage hydro - inv mass + vec upd");
       if (current_stage == n_stages-1 && !is_last_stage_implicit)
         {
-
+          // As anticipated, If the last stage is explicit, we use a completely
+          // different code path, as we do not have to invert any sparse matrix.
+          // We simply accumulate the residuals in a temporary vector, invert the
+          // local mass matrix, and add the result to the old solution vector.
           data.cell_loop(
             &Base::local_apply_cell_mass_height,
             static_cast<const Base *>(this),
@@ -558,12 +837,12 @@ namespace SpaceDiscretization
             std::function<void(const unsigned int, const unsigned int)>(),
             0);
 
-            solution_height.zero_out_ghost_values();
-            data.cell_loop(
-              &Base::local_apply_inverse_mass_matrix_height,
-              static_cast<const Base *>(this),
-              solution_height,
-              vec_ki_height.front());
+          solution_height.zero_out_ghost_values();
+          data.cell_loop(
+            &Base::local_apply_inverse_mass_matrix_height,
+            static_cast<const Base *>(this),
+            solution_height,
+            vec_ki_height.front());
 
 
           data.cell_loop(
@@ -598,9 +877,14 @@ namespace SpaceDiscretization
         }
       else
         {
-
-          // The first step consists in upadating the discharge considering
-          // only explicit contributions.
+          // For the inner stages we solve the system using the Schur complement.
+          // The first step updates the discharge with the explicit contributions
+          // only. A cell loop assembles the right-hand side into the
+          // `front()` vector, summing the stiff and non-stiff residuals computed
+          // so far, and then adds the mass term at time level `n` within a
+          // `local_apply` operator. A second cell loop computes the intermediate
+          // discharge, denoted as "star" discharge, by inverting the mass matrix
+          //  and stores it into the `next_ri` vector.
           data.cell_loop(
             &Base::local_apply_cell_mass_discharge,
             static_cast<const Base *>(this),
@@ -634,17 +918,26 @@ namespace SpaceDiscretization
             true);
 
 
-          // The second step consists in updating the free-surface.
-          data.loop(&Base::local_apply_cell_height,
-                    &Base::local_apply_face_height,
-                    &Base::local_apply_boundary_face_height,
-                    static_cast<const Base *>(this),
+          // The second step consists of updating the free surface. A cell/face
+          // loop computes the mass flux term related to the "star" discharge.
+          // To do this, specific `local_apply` operators are created for the
+          // star discharge.
+          // The right-hand side is then assembled into the `front()` vector,
+          // summing the residuals computed so far multiplied by proper weights,
+          // The mass term at time level `n` is added within a `local_apply`
+          // operator, as in step 1.
+          //
+          // The mass matrix inversion is left to Mattia's master thesis.
+          data.loop(&OceanoOperatorSemiImplicit::local_apply_cell_height,
+                    &OceanoOperatorSemiImplicit::local_apply_face_height,
+                    &OceanoOperatorSemiImplicit::local_apply_boundary_face_height,
+                    this,
                     vec_ki_height.front(),
-                    {next_ri_height, next_ri_discharge},
+                    {current_ri[0], next_ri_discharge},
                     true,
                     MatrixFree<dim, Number>::DataAccessOnFaces::values,
                     MatrixFree<dim, Number>::DataAccessOnFaces::values);
-      
+
           data.cell_loop(
             &Base::local_apply_cell_mass_height,
             static_cast<const Base *>(this),
@@ -654,18 +947,23 @@ namespace SpaceDiscretization
               /* DEAL_II_OPENMP_SIMD_PRAGMA */
               for (unsigned int i = start_range; i < end_range; ++i)
                 {
-                  Number k_i           = vec_ki_height[1].local_element(i);
-                  vec_ki_height.front().local_element(i)  += factor_residual[0]  * k_i;
+                  Number kf_i         = vec_ki_height.front().local_element(i);
+                  Number k_i          = vec_ki_height[1].local_element(i);
+                  vec_ki_height.front().local_element(i)  = factor_matrix * kf_i + factor_tilde_residual[0]  * k_i;
                   for (unsigned int j = 1; j < current_stage+1; ++j)
 		    {
 		      k_i              = vec_ki_height[j+1].local_element(i);
-		      vec_ki_height.front().local_element(i) += factor_residual[j]  * k_i;
+		      vec_ki_height.front().local_element(i) += factor_tilde_residual[j]  * k_i;
 		    }
                 }
 	    },
             std::function<void(const unsigned int, const unsigned int)>(),
             0);
 
+          // The mass matrix inversion is left to Mattia master thesis. It should go here
+          // with output vector the `solution` vector for last stage and `next_ri` vector
+          // for inner stages.
+          /* TODO */
           if (current_stage == n_stages-1)
             {
               solution_height.zero_out_ghost_values();
@@ -687,17 +985,28 @@ namespace SpaceDiscretization
             }
 
 
-          // The last step is the correction of the discharge
-          /*data.loop(
-                &OceanoOperatorSemiImplicit::local_apply_cell_pressure,
-                &OceanoOperatorSemiImplicit::local_apply_face_pressure,
-                &OceanoOperatorSemiImplicit::local_apply_boundary_face_pressure,
+          // The last step is the correction of the "star" discharge. With the updated
+          // free surface at hand, the pressure terms are computed.
+          // A simple trick avoids creating a new specific `local_apply` operator
+          // and reuses the existing `local_apply_stiff` instead: a zero discharge
+          // eliminates the bottom friction term and lets the stiff terms collapse
+          // to the pressure terms. A final inversion of the discharge mass matrix
+          // completes the step and update the discharge.
+          solution_discharge = 0.;
+          std::vector<LinearAlgebra::distributed::Vector<Number>> input_vectors =
+            (current_stage == n_stages - 1)
+              ? std::vector<LinearAlgebra::distributed::Vector<Number>>{solution_height, solution_discharge}
+              : std::vector<LinearAlgebra::distributed::Vector<Number>>{next_ri_height, solution_discharge};
+          data.loop(
+                &OceanoOperatorSemiImplicit::local_apply_cell_stiff_discharge,
+                &OceanoOperatorSemiImplicit::local_apply_face_stiff_discharge,
+                &OceanoOperatorSemiImplicit::local_apply_boundary_face_stiff_discharge,
                 this,
                 vec_ki_discharge.front(),
-                solution_height,
+                input_vectors,
                 true,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values,
-                MatrixFree<dim, Number>::DataAccessOnFaces::values);*/
+                MatrixFree<dim, Number>::DataAccessOnFaces::values);
 
           data.cell_loop(
             &OceanoOperatorSemiImplicit::local_apply_inverse_modified_mass_matrix_discharge,
