@@ -199,13 +199,16 @@ namespace Model
         const Number                    drag_coefficient,
         const Tensor<1, dim+1, Number> &data) const;
 
-    // For ImEx time integration strategy, we separate the source term in a stiff and
-    // a non-stiff part.
-    // If a realistic Manning model is used, the bottom friction term may become
-    // very large in shallow area and an extremely small time step would be necessary to
-    // integrate it. Also gravity waves are very fast and can lead to restrictive time
-    // steps for coastal simulations. For this reason the stiff parts of the source term
-    // are the bottom friction and pressure gradient.
+    // For the implicit-explicit time integration strategy, we separate
+    // the source term into a stiff and a non-stiff part.
+    // If a realistic Manning model is used, the bottom friction term may
+    // become very large in shallow areas, and an extremely small time step
+    // would be necessary to integrate it explicitly. Also, gravity waves are
+    // very fast and can lead to restrictive time steps for coastal simulations.
+    // For these reasons, the stiff parts of the source term are the bottom
+    // friction and the pressure gradient. As the Schur complement is used to
+    // solve the system, a further partitioning of only the pressure terms is
+    // necessary.
     template <int dim, typename Number>
     inline DEAL_II_ALWAYS_INLINE //
       Tensor<1, dim, Number>
@@ -241,6 +244,14 @@ namespace Model
         const Tensor<1, dim, Number>   &gradient_height,
         const Number                    bathymetry,
         const Number                    drag_coefficient) const;
+
+    template <int dim, typename Number>
+    inline DEAL_II_ALWAYS_INLINE //
+      Tensor<1, dim, Number>
+      source_pressure(
+        const Number                  height,
+        const Tensor<1, dim, Number> &gradient_height,
+        const Number                  bathymetry) const;
 
     // The next function computes an estimate of the square of the graivty wave speed, from
     // the vector of conserved variables
@@ -524,6 +535,19 @@ namespace Model
 
     return - g * h * gradient_height
            - bottom_friction.source<dim, Number>(v, drag_coefficient, h);
+  }
+
+  template <int dim, typename Number>
+  inline DEAL_II_ALWAYS_INLINE //
+    Tensor<1, dim, Number>
+    ShallowWater::source_pressure(
+      const Number                    height,
+      const Tensor<1, dim, Number>   &gradient_height,
+      const Number                    bathymetry) const
+  {
+    const Number h = depth(height, bathymetry);
+
+    return - g * h * gradient_height;
   }
 
   template <typename Number>

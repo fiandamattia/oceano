@@ -75,6 +75,12 @@ namespace SpaceDiscretization
       const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
       const std::pair<unsigned int, unsigned int>                   &cell_range) const;
 
+    void local_apply_cell_pressure_discharge(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &cell_range) const;
+
     void local_apply_face_height(
       const MatrixFree<dim, Number>                                 &data,
       LinearAlgebra::distributed::Vector<Number>                    &dst,
@@ -280,6 +286,40 @@ namespace SpaceDiscretization
 
             phi_discharge.submit_value(
               model.source_pressure_and_friction(z_q, q_q, dz_q, zb_q, cf_q),
+              q);
+          }
+
+        phi_discharge.integrate_scatter(EvaluationFlags::values,
+                                       dst);
+      }
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_cell_pressure_discharge(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &cell_range) const
+  {
+    FEEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data,cell_range,0);
+    FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data,cell_range,1);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        phi_height.reinit(cell);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values | EvaluationFlags::gradients);
+        phi_discharge.reinit(cell);
+
+        for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
+          {
+            const auto z_q = phi_height.get_value(q);
+            const auto dz_q = phi_height.get_gradient(q);
+
+            const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0];
+
+            phi_discharge.submit_value(
+              model.source_pressure(z_q, dz_q, zb_q),
               q);
           }
 
@@ -985,20 +1025,22 @@ namespace SpaceDiscretization
             }
 
 
-          // The last step is the correction of the "star" discharge. With the updated
-          // free surface at hand, the pressure terms are computed.
-          // A simple trick avoids creating a new specific `local_apply` operator
-          // and reuses the existing `local_apply_stiff` instead: a zero discharge
-          // eliminates the bottom friction term and lets the stiff terms collapse
-          // to the pressure terms. A final inversion of the discharge mass matrix
-          // completes the step and update the discharge.
-          solution_discharge = 0.;
+          // The last step is the correction of the "star" discharge. With the
+          // updated free surface at hand, we compute the pressure terms. For face
+          // loops, we can reuse the stiff operators, which are equal to the pressure
+          // face operators.
+          // In principle, the discharge vector should not enter the pressure terms.
+          // However, for some boundary conditions the boundary free-surface value
+          // depends on the inner discharge value, which is why we need to pass the
+          // discharge vector.
+          // A final inversion of the discharge mass matrix completes the step and
+          // updates the discharge.
           std::vector<LinearAlgebra::distributed::Vector<Number>> input_vectors =
             (current_stage == n_stages - 1)
-              ? std::vector<LinearAlgebra::distributed::Vector<Number>>{solution_height, solution_discharge}
-              : std::vector<LinearAlgebra::distributed::Vector<Number>>{next_ri_height, solution_discharge};
+              ? std::vector<LinearAlgebra::distributed::Vector<Number>>{solution_height, current_ri[1]}
+              : std::vector<LinearAlgebra::distributed::Vector<Number>>{next_ri_height, current_ri[1]};
           data.loop(
-                &OceanoOperatorSemiImplicit::local_apply_cell_stiff_discharge,
+                &OceanoOperatorSemiImplicit::local_apply_cell_pressure_discharge,
                 &OceanoOperatorSemiImplicit::local_apply_face_stiff_discharge,
                 &OceanoOperatorSemiImplicit::local_apply_boundary_face_stiff_discharge,
                 this,
