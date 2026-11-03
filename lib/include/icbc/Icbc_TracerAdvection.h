@@ -36,8 +36,9 @@ namespace ICBC
   //
   // Two different concentration profiles are available: a smooth cosine bell and
   // a discontinuous one. The smooth test is the default one.
-#undef ICBC_TRACERADVECTION_COSINE
-#define ICBC_TRACERADVECTION_DISCONTINUOUS
+
+#define ICBC_TRACERADVECTION_COSINE
+#undef  ICBC_TRACERADVECTION_DISCONTINUOUS
 
 
   using namespace dealii;
@@ -132,6 +133,7 @@ namespace ICBC
     const double conc2 =
       radius < 0.5*radius0 ? cmax2 * std::cos(2.0*rho_half) : 0.0;
 #else
+
     /* const double conc1 =
       radius < radius0 ? cmax1 : 0.0;
     const double conc2 =

@@ -36,8 +36,17 @@
 
 // First come the numerics. The following preprocessor select the time integrator. For
 // now we have coded general explicit schemes that belong to the family of Runge-Kutta scheme.
-#define TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-#undef  TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
+#undef  TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
+#define TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
+
+// Than it comes the space discretization based on Discontinuous Galerkin. Different
+// combinations are possible: an explicit scheme, a scheme with implicit friction or a
+// semi-implicit scheme. Note that the space discretization should match the time
+// discretization, e.g. the explicit space implementation must go with the explicit time
+// discretization:
+#undef  SPACEDISCRETIZATION_EXPLICIT
+#define SPACEDISCRETIZATION_IMPLICITFRICTION
+#undef  SPACEDISCRETIZATION_SEMIIMPLICIT
 // The numerical flux (Riemann solver) at the faces between cells. For this
 // program, we have implemented a modified variant of the Lax--Friedrichs
 // flux and the Harten--Lax--van Leer (HLL) flux:
@@ -168,22 +177,32 @@
 #include <deal.II/grid/grid_refinement.h>
 #include <deal.II/distributed/solution_transfer.h>
 
-// The following files include the oceano libraries:
-#include <space_discretization/OceanDG.h>
+// The following files include the oceano classes.
+// In some cases, the files are included depending on
+// the preprocessor keys. For space discretization, we have two different
+// functionalities (time stepping and tracer), which are treated using two
+// levels of base-derived classes. The first level resolves time stepping,
+// while the second handles the cases with and without tracers.
+#if defined OCEANO_WITH_TRACERS
 #include <space_discretization/OceanDGWithTracer.h>
+#elif defined SPACEDISCRETIZATION_EXPLICIT
+#include <space_discretization/OceanDGExplicit.h>
+#elif defined SPACEDISCRETIZATION_IMPLICITFRICTION
+#include <space_discretization/OceanDGImplicitFriction.h>
+#elif defined SPACEDISCRETIZATION_SEMIIMPLICIT
+#include <space_discretization/OceanDGSemiImplicit.h>
+#endif
 #include <io/CommandLineParser.h>
 #include <deal.II_oceano/hpTuner.h>
-
-// The following files are included depending on
-// the Preprocessor keys. This is necessary because
-// we have done a limited use of virtual classes; on the contrary
-// each of these header files contains the same class definition, so they
-// cannot be linked together.
 #if defined TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
 #include <time_integrator/ExplicitRungeKuttaIntegrator.h>
 #elif defined TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
 #include <time_integrator/AdditiveRungeKuttaIntegrator.h>
 #endif
+// For icbc, the preprocessor is necessary because
+// we have done a limited use of virtual classes; on the contrary
+// each of these header files contains the same class definition, so they
+// cannot be linked together.
 #if defined ICBC_IMPULSIVEWAVE
 #include <icbc/Icbc_ImpulsiveWave.h>
 #elif defined ICBC_SHALLOWWATERVORTEX
@@ -220,8 +239,9 @@ namespace Problem
   // we also specify a number of points in the Gauss-Legendre quadrature formula we
   // want to use for the volume terms:
   constexpr unsigned int n_q_points_1d        = floor(1.5*fe_degree) + 1;
-  // The number of tracers:
-  constexpr unsigned int n_tracers            = 2;
+  // The number of tracers, and as a consequence of prognostic variables:
+  constexpr unsigned int n_tracers            = 0;
+  constexpr unsigned int n_variables          = dimension + 1 + n_tracers;
   // and the maximum number of iterations for the iterative method that invert the
   // mass matrix in the continuity equation. For wet-dry cells convergence
   // is fast so a few iterations are enough, for wet cells the iterative method is basically
@@ -250,7 +270,6 @@ namespace Problem
 #elif defined MODEL_SHALLOWWATERWITHBIOLOGY
   static_assert(n_tracers == 2, "MODEL_SHALLOWWATERWITHBIOLOGY requires n_tracers == 2");
 #endif
-  constexpr unsigned int n_variables          = dimension + 1 + n_tracers;
 
   // @sect3{The OceanoProblem class}
 
@@ -335,12 +354,30 @@ namespace Problem
 
     TimerOutput timer;
 
-#ifndef OCEANO_WITH_TRACERS
-    SpaceDiscretization::OceanoOperator<dim, n_tra, fe_degree, n_q_points_1d>
+#if defined SPACEDISCRETIZATION_EXPLICIT
+  #ifndef OCEANO_WITH_TRACERS
+    SpaceDiscretization::OceanoOperatorExplicit<dim, n_tra, fe_degree, n_q_points_1d>
       oceano_operator;
-#else
+  #else
     SpaceDiscretization::OceanoOperatorWithTracer<dim, n_tra, fe_degree, n_q_points_1d>
       oceano_operator;
+  #endif
+#elif defined SPACEDISCRETIZATION_IMPLICITFRICTION
+  #ifndef OCEANO_WITH_TRACERS
+    SpaceDiscretization::OceanoOperatorImplicitFriction<dim, n_tra, fe_degree, n_q_points_1d>
+      oceano_operator;
+  #else
+    SpaceDiscretization::OceanoOperatorWithTracer<dim, n_tra, fe_degree, n_q_points_1d>
+      oceano_operator;
+  #endif
+#elif defined SPACEDISCRETIZATION_SEMIIMPLICIT
+  #ifndef OCEANO_WITH_TRACERS
+    SpaceDiscretization::OceanoOperatorSemiImplicit<dim, n_tra, fe_degree, n_q_points_1d>
+      oceano_operator;
+  #else
+    SpaceDiscretization::OceanoOperatorWithTracer<dim, n_tra, fe_degree, n_q_points_1d>
+      oceano_operator;
+  #endif
 #endif
 
     double time, time_step;
@@ -763,7 +800,6 @@ namespace Problem
                                                 *oceano_operator.bc->problem_data,
                                                 estimated_error_per_cell);
 
-                                                
       DataOut<dim>  data_out;
 
       DataOutBase::VtkFlags flags;
@@ -776,6 +812,7 @@ namespace Problem
       const std::string filename =
         "grad_error.vtu";
       data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+
 
       float max_error = estimated_error_per_cell.linfty_norm();
       max_error = Utilities::MPI::max(max_error, MPI_COMM_WORLD);
@@ -1439,27 +1476,29 @@ namespace Problem
     }
 
     // For a general Runge--Kutta schemes with Butcher tableau we need a table
-    // to store the updated residual vector at each stage. We blend one of the
-    // two auxiliary vectors with this table in a single entity, so at the end
+    // to store the updated residual vector at each stage. Moreover we need two auxiliary
+    // vectors to store temporarly the current residual and the current solution. We blend
+    // one of the two auxiliary vectors with the RK table in a single entity, so at the end
     // `rk_register_2` has size equal to the number of stage plus one. For
     // the Additive Runge--Kutta the number of stored residuals is doubled
     // because of the explicit and the implicit residuals. We blend the two residuals
-    // per stage in a table, that should have size equal to twice the number of stages plus one.
-    // However the last stage has common residuals so we can save one residual and
-    // the final dimension is just twice the number of stages. Please note that, for now, ARK
-    // is used only for the discharge equation.
+    // per stage in a table, that has size equal to twice the number of stages plus one.
+    // However, if the last stage is explicit, the last stage has a common residuals for
+    // the explicit and implicit part, so we can save one residual and the final dimension
+    // is just twice the number of stages. Please note that, for now, ARK is used only for
+    // the discharge equation.
 #if defined TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
     const TimeIntegrator::ExplicitRungeKuttaIntegrator integrator(rk_scheme);
 
     LinearAlgebra::distributed::Vector<Number> rk_register_height_1;
     LinearAlgebra::distributed::Vector<Number> rk_register_discharge_1;
     LinearAlgebra::distributed::Vector<Number> rk_register_tracer_1;
-    std::vector<LinearAlgebra::distributed::Vector<Number>> rk_register_height_2(
-                                                              integrator.n_stages()+1);
-    std::vector<LinearAlgebra::distributed::Vector<Number>> rk_register_discharge_2(
-                                                              integrator.n_stages()+1);
-    std::vector<LinearAlgebra::distributed::Vector<Number>> rk_register_tracer_2(
-                                                              integrator.n_stages()+1);
+    std::vector<LinearAlgebra::distributed::Vector<Number>>
+      rk_register_height_2(integrator.n_stages() + 1);
+    std::vector<LinearAlgebra::distributed::Vector<Number>>
+     rk_register_discharge_2(integrator.n_stages() + 1);
+    std::vector<LinearAlgebra::distributed::Vector<Number>>
+      rk_register_tracer_2(integrator.n_stages() + 1);
 
     integrator.reinit(solution_height, solution_discharge, solution_tracer,
                       rk_register_height_1,
@@ -1475,12 +1514,12 @@ namespace Problem
     LinearAlgebra::distributed::Vector<Number> rk_register_height_1;
     LinearAlgebra::distributed::Vector<Number> rk_register_discharge_1;
     LinearAlgebra::distributed::Vector<Number> rk_register_tracer_1;
-    std::vector<LinearAlgebra::distributed::Vector<Number>> rk_register_height_2(
-                                                              integrator.n_stages()+1);
-    std::vector<LinearAlgebra::distributed::Vector<Number>> rk_register_discharge_2(
-                                                              2*integrator.n_stages());
-    std::vector<LinearAlgebra::distributed::Vector<Number>> rk_register_tracer_2(
-                                                              integrator.n_stages()+1);
+    std::vector<LinearAlgebra::distributed::Vector<Number>>
+      rk_register_height_2(integrator.n_stages() + 1);
+    std::vector<LinearAlgebra::distributed::Vector<Number>>
+      rk_register_discharge_2(2 * integrator.n_stages() + integrator.is_last_stage_implicit());
+    std::vector<LinearAlgebra::distributed::Vector<Number>>
+      rk_register_tracer_2(integrator.n_stages() + 1);
 
     integrator.reinit(solution_height, solution_discharge, solution_tracer,
                       rk_register_height_1,
