@@ -240,7 +240,7 @@ namespace Problem
   // want to use for the volume terms:
   constexpr unsigned int n_q_points_1d        = floor(1.5*fe_degree) + 1;
   // The number of tracers, and as a consequence of prognostic variables:
-  constexpr unsigned int n_tracers            = 0;
+  constexpr unsigned int n_tracers            = 2;
   constexpr unsigned int n_variables          = dimension + 1 + n_tracers;
   // and the maximum number of iterations for the iterative method that invert the
   // mass matrix in the continuity equation. For wet-dry cells convergence
@@ -251,9 +251,9 @@ namespace Problem
   // Next off is the choice of the time integrator scheme: please check the time integrator
   // class to see the list of all possible time integrators:
 #if defined TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_3;
+  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_2;
 #elif defined TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
-  constexpr TimeIntegrator::AdditiveRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_3;
+  constexpr TimeIntegrator::AdditiveRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_2;
 #endif
   //
   //
