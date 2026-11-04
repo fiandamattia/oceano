@@ -17,7 +17,7 @@
  */
 #ifndef OCEANDGSEMIIMPLICIT_H
 #define OCEANDGSEMIIMPLICIT_H
- 
+
 // The following files include the oceano libraries
 #include <space_discretization/OceanDG.h>
 
@@ -240,12 +240,12 @@ namespace SpaceDiscretization
             const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0];
             const auto data_onthefly_q =
               evaluate_function<dim, Number, dim+1>(*bc->problem_data, point_q, 2);
-
+		// parte di moltiplicazione tra q e u
             phi_discharge.submit_gradient(
               model.advective_diffusive_flux(
                 z_q, q_q, model.depth(z_q, zb_q)*du_q, zb_q, area_cell),
               q);
-
+            // non metto nella parte non stiff, ne la pressure ne la friction
             phi_discharge.submit_value(
               model.source_no_pressure_no_friction(q_q, data_onthefly_q),
               q);
@@ -283,7 +283,7 @@ namespace SpaceDiscretization
 
             const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0];
             const auto cf_q = data_quadrature_cell_0.get_data(cell, q)[1];
-
+	    // termine stiff è L, e qui stiamo loopando sulle celle, dove ho contributo di zeta e friction
             phi_discharge.submit_value(
               model.source_pressure_and_friction(z_q, q_q, dz_q, zb_q, cf_q),
               q);
@@ -479,7 +479,7 @@ namespace SpaceDiscretization
             const auto normal = phi_discharge_m.normal_vector(q);
             const auto zb_m   = data_quadrature_face.get_data(face, 2*q);
             const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);
-
+            // Qui nel loop sulle facce è loop di gamma, dove ho i valori alle due facce + e - e compare solo la pressione zeta
             auto numerical_flux_m =
               -num_flux.numerical_presflux_strong(z_m,
                                                  z_p,
@@ -749,7 +749,7 @@ namespace SpaceDiscretization
 
 
 
-  // The partitioning of the right-hand side of the shallow water equations into 
+  // The partitioning of the right-hand side of the shallow water equations into
   // stiff and non-stiff components follows the requirement of using a large time
   // step that is not restricted by gravity wave speed or bottom friction coefficient.
   // This is obtained by treating semi-implicitly the mass flux term in the
@@ -825,12 +825,12 @@ namespace SpaceDiscretization
       else
         {
           data.loop(
-                &OceanoOperatorSemiImplicit::local_apply_cell_nonstiff_discharge,
-                &OceanoOperatorSemiImplicit::local_apply_face_nonstiff_discharge,
+                &OceanoOperatorSemiImplicit::local_apply_cell_nonstiff_discharge, // contributo non stiff, sarebbe la parte di cella di G (celle = guarda gli elementi K)
+                &OceanoOperatorSemiImplicit::local_apply_face_nonstiff_discharge, // contributo non stiff delle faces quindi loop su gamma
                 &OceanoOperatorSemiImplicit::local_apply_boundary_face_nonstiff_discharge,
                 this,
-                vec_ki_discharge[2*current_stage+1],
-                current_ri,
+                vec_ki_discharge[2*current_stage+1], // vettori registri
+                current_ri, // runge kutta stage attuale
                 true,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values);
@@ -925,6 +925,8 @@ namespace SpaceDiscretization
           // `local_apply` operator. A second cell loop computes the intermediate
           // discharge, denoted as "star" discharge, by inverting the mass matrix
           //  and stores it into the `next_ri` vector.
+
+          // Primo step del calcolo di Q* noto traamite la risoluzione di A Q* invertendola
           data.cell_loop(
             &Base::local_apply_cell_mass_discharge,
             static_cast<const Base *>(this),
@@ -951,13 +953,14 @@ namespace SpaceDiscretization
             1);
 
           data.cell_loop(
+          // Inverto A che è diagonle quindi esy
             &OceanoOperatorSemiImplicit::local_apply_inverse_modified_mass_matrix_discharge,
             this,
-            next_ri_discharge,
+            next_ri_discharge, // Q*
             {vec_ki_discharge.front(), current_ri[0], current_ri[1]},
-            true);
+            true); // qui gli sto dando gli input della funz
 
-
+	  // Secondo step, calcolo direttmente F(l) rispetto a scrivere tutto come B Q
           // The second step consists of updating the free surface. A cell/face
           // loop computes the mass flux term related to the "star" discharge.
           // To do this, specific `local_apply` operators are created for the
@@ -972,7 +975,7 @@ namespace SpaceDiscretization
                     &OceanoOperatorSemiImplicit::local_apply_face_height,
                     &OceanoOperatorSemiImplicit::local_apply_boundary_face_height,
                     this,
-                    vec_ki_height.front(),
+                    vec_ki_height.front(), // metto RHS del nostro sisterma
                     {current_ri[0], next_ri_discharge},
                     true,
                     MatrixFree<dim, Number>::DataAccessOnFaces::values,
@@ -1004,6 +1007,9 @@ namespace SpaceDiscretization
           // with output vector the `solution` vector for last stage and `next_ri` vector
           // for inner stages.
           /* TODO */
+          // Guaarda rigaa 824 di Atmospheric flow di orlndo
+	  // Clsse di DEALII = SolverGMRES, solvercontrol dealii (fine tuning)
+          // Noi abbimo già la rhs, pres_fix è l solution, che per noi è next_ri_height perchè solution_height è zeta_n e euler_matrix è la nostra lhs. Per creare la lhs us l MatrixDFreeOperator, è una derived clss e va reimplementta un tot di roba, tipo pply_add, per noi apply_add è tutto l'operatore dellaa lefthand side, dove ovviamente avro dei data_cell loop da faare e dei dta_face_loop da fare e guardare anche i vmult, apply_add probabilmente prende in input direttamente tutt la rhs, va tutto scritto  come matrice*vettore, senza salvare mtrici, nota bene che non è detto che bisogna costruire le mtrici perchè maaagaari sono dei fake vmult, che in realtà sono solo dei daata_loop
           if (current_stage == n_stages-1)
             {
               solution_height.zero_out_ghost_values();
