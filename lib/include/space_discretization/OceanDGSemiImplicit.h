@@ -176,86 +176,222 @@ namespace SpaceDiscretization
   // For the continuity equation, we copies the apply the cell apply
   // function of the base class, since nothing changes there. Neverthless we
   // have to reimplement it, to be used in the cell_loop.
+
+  // CONTINUITY EQUATION - MASS FLUX
+  // Computes the volume contribution of the discrete divergence operator B.
+  // When applied to the known intermediate discharge Q*, it contributes
+  // to the right-hand side F of the free-surface equation.
+  // Mathematically, the volume contribution corresponds to:
+  // integral_K q_h · grad(psi_i) dOmega,
+  // where psi_i is a test function for the free surface.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_cell_height(
-    const MatrixFree<dim, Number> &,
-    LinearAlgebra::distributed::Vector<Number>                    &dst,
-    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
-    const std::pair<unsigned int, unsigned int>                   &cell_range) const
+    const MatrixFree<dim, Number> &, // information regarding the matrix-free data structure, via a dealii::MatrixFree object
+    LinearAlgebra::distributed::Vector<Number>                    &dst, // dst = destination vector, where the result of the operator is stored,
+                                                                        // is a distributed vector, which is a vector that is distributed across multiple processors in a parallel computing environment
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src, // vector of distributed vectors, which contains the input data for the operator, in this case the discharge vector Q*
+                                                                        // for example here we use src[1] to access the discharge vector Q*.
+                                                                        // but src[0] is not used, because the height equation does not depend on the height vector H.
+                                                                        // so src contains the prognostic variables, non necessarily evaluated at the current time step, but at the time step of the Runge-Kutta stage.
+    const std::pair<unsigned int, unsigned int>                   &cell_range) const // std::pair defines the range of cell batches to process:
+                                                                                     // first is the starting index (included), second is the ending index (excluded).
   {
+    // FEEvaluation is a class that provides the evaluation of finite element functions at quadrature points.
+    // FEEvaluation<dim, fe_degree, n_points_1d, n_components, Number>
+    //   dim          : spatial dimension of the problem
+    //   fe_degree    : polynomial degree (-1 means determined at runtime), indeed we choose the poly degree at runtime.
+    //   n_points_1d  : number of quadrature points per spatial direction
+    //   n_components : number of components (1 for scalar, dim for vector)
+    //   Number       : numerical type (e.g., double)
+    //
+    // Constructor (data, cell_range, dof_index):
+    //   data         : MatrixFree object containing FE and geometric information
+    //   cell_range   : range of cell batches to process
+    //   dof_index    : index of the DoFHandler registered in MatrixFree
+
+    // Here we create two FEEvaluation objects, one for the height (scalar) and one for the discharge (vector).
+    // Indeed, note the difference in the n_components template parameter: 1 for the height and dim for the discharge.
+    // Notice also the dof_index parameter in the constructor: 0 for the height and 1 for the discharge,
+    // which correspond to the different DoFHandlers registered in the MatrixFree object.
     FEEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data,cell_range,0);
     FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data,cell_range,1);
-
+    
+    // Now we loop over the cell batches in the specified range. For each cell batch, we reinitialize the FEEvaluation objects
+    // and gather the discharge values from the src vector.
+    // Gathering means to gather the local DoF values from src[1] (discharge vector)
+    // and evaluate the discrete discharge at quadrature points.
+    // This is a local FE operation, not an MPI_Gather.
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
-        phi_height.reinit(cell);
-        phi_discharge.reinit(cell);
-        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
+        // Reinitializing is the equivalent of selecting the current cell batch for the FEEvaluation objects.
+        phi_height.reinit(cell); // reinitialize the height evaluator for the current cell batch
+        phi_discharge.reinit(cell); // reinitialize the discharge evaluator for the current cell batch
+        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values); // actual evaluation of the discharge at quadrature points, gathering from src[1] (discharge vector)
+        
+        
+        // Here we loop over the quadrature points of the cell batch
+        // and compute the mass flux at each quadrature point.
+        // The order of operations is:
+        // 1. Get the discharge value using phi_discharge.get_value(q).
+        // 2. Compute the mass flux using model.mass_flux(), which takes
+        //    the discharge as input (and returns the discharge itself).
+        // 3. Submit the mass flux to phi_height using submit_gradient().
+        //    This contribution will be integrated later by integrate_scatter().
+        //
+        // Since we are working with the continuity equation, the test
+        // functions belong to the free-surface space. Therefore, we use
+        // phi_height.submit_gradient() to integrate against their gradients.
+        //
+        // Mathematically, the volume contribution corresponds to:
+        // integral_K q_h · grad(psi_i) dOmega,
+        // where psi_i is a test function for the free surface.
 
         for (unsigned int q = 0; q < phi_height.n_q_points; ++q)
           phi_height.submit_gradient(
             model.mass_flux(phi_discharge.get_value(q)),
             q);
+        
+        // integrate_scatter() performs two operations:
+        //
+        // 1. integrate:
+        //    Computes the local integral over the current cell (or cell batch)
+        //    using the submitted values, quadrature weights and Jacobian.
+        //
+        // 2. scatter:
+        //    Accumulates the local contributions into the destination
+        //    vector dst, at the corresponding DoF indices.
+        //
+        // The summation over all cells is managed by the external data.loop(),
+        // which calls this method for each cell batch.
+        //
+        // In DG, DoFs are local to each cell, so contributions from
+        // different cells do not necessarily share the same DoF indices.
+
+
+        // A Degree of Freedom (DoF) is an independent coefficient of the
+        // finite element approximation, not necessarily a mesh node.
+        //
+        // In nodal finite elements, DoFs represent solution values at nodes.
+        // In other bases, they represent coefficients of basis functions.
+        //
+        // In DG, each cell has its own independent DoFs. Therefore, two
+        // adjacent cells can share the same geometric point but have
+        // different DoF indices and different solution values.
+        // This allows the numerical solution to be discontinuous across cells.
 
         phi_height.integrate_scatter(EvaluationFlags::gradients,
                                        dst);
       }
   }
 
+  // MOMENTUM EQUATION - NON-STIFF CONTRIBUTIONS
+  // Computes the volume contributions of the explicit (non-stiff)
+  // part of the momentum equation, associated with the operator G.
+  // In particular, it includes the advective and diffusive fluxes,
+  // while pressure and bottom friction are treated separately.
+  //
+  // The free-surface height zeta is used to reconstruct the water
+  // depth h, while the discharge q and the velocity gradient
+  // are used to compute the advective and diffusive fluxes.
+  //
+  // Mathematically, the advective volume contribution corresponds to:
+  // integral_K (q_h tensor u_h) : grad(varphi_i) dOmega,
+  // where varphi_i is a vector-valued test function for the discharge.
+  //
+  // The complete volume contribution may also include diffusion
+  // and non-stiff source terms.
+
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_cell_nonstiff_discharge(
-    const MatrixFree<dim, Number> &,
-    LinearAlgebra::distributed::Vector<Number>                    &dst,
-    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const MatrixFree<dim, Number> &, // information regarding the matrix-free data structure, via a dealii::MatrixFree object
+    LinearAlgebra::distributed::Vector<Number>                    &dst, // dst = destination vector, where the result of the operator is stored,
+                                                                        // is a distributed vector, which is a vector that is distributed across multiple processors in a parallel computing environment
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src, // vector of distributed vectors, which contains the input data for the operator,
+                                                                        // check the comment in local_apply_cell_height for more details.
     const std::pair<unsigned int, unsigned int>                   &cell_range) const
   {
-    FEEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data,cell_range,0);
-    FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data,cell_range,1);
-    FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_velocity(data,cell_range,1);
+    FEEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data,cell_range,0); // FEEvaluation for the free-surface height (scalar)
+    FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data,cell_range,1); // FEEvaluation for the discharge (vector)
+    FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_velocity(data,cell_range,1); // FEEvaluation for the velocity (vector), which is computed from the discharge and depth
+                                                                                     // since is not a prognostic variable, we do not have a DoFHandler for it, but we can compute it from the prognostic variables.
+    // Compute 1/p^2, where p is the polynomial degree.
+    // Use zero for p = 0 to avoid division by zero.
+    // This factor can be used to scale numerical coefficients depending
+    // on the polynomial degree, e.g., diffusion or stabilization parameters.
+    const auto inv_degree = degree > 0 ? 1./(degree*degree) : 0.; // the ? operator is a ternary operator, which is a shorthand for an if-else statement.
+                                                                  // If degree > 0, then inv_degree = 1/(degree^2), otherwise inv_degree = 0.
 
-    const auto inv_degree = degree > 0 ? 1./(degree*degree) : 0.;
-
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) // loop over the cell batches in the specified range
       {
         phi_height.reinit(cell);
-        phi_height.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values); // gather the free-surface height values from src[0] (height vector) and evaluate at quadrature points
         phi_discharge.reinit(cell);
-        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
+        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values); // gather the discharge values from src[1] (discharge vector) and evaluate at quadrature points
         phi_velocity.reinit(cell);
-        phi_velocity.gather_evaluate(src.back(), EvaluationFlags::gradients);
-
-        VectorizedArray<Number> area_cell;
+        phi_velocity.gather_evaluate(src.back(), EvaluationFlags::gradients); // gather the velocity gradients from src.back() (velocity vector) and evaluate at quadrature points
+                                                                              // src.back() accesses the last element of the src vector
+        VectorizedArray<Number> area_cell; // declare a vectorized array to store the cell areas for each quadrature point in the current cell batch
+        // data is a MatrixFree object that contains information about the mesh and the finite element spaces.
+        // data.n_active_entries_per_cell_batch(cell) returns the number of active cells in the current SIMD batch, excluding unused entries.
         for (unsigned int v = 0; v < data.n_active_entries_per_cell_batch(cell); ++v)
-          area_cell[v] = inv_degree * data.get_cell_iterator(cell,v)->measure();
-
+          area_cell[v] = inv_degree * data.get_cell_iterator(cell,v)->measure(); // data.get_cell_iterator(cell,v) returns an iterator to the v-th active cell in the current SIMD batch,
+                                                                                 // and measure() returns its area (or volume in 3D).
+        // Now we loop over the quadrature points of the cell batch and compute the non-stiff contributions to the momentum equation.
         for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
           {
-            const auto z_q = phi_height.get_value(q);
-            const auto q_q = phi_discharge.get_value(q);
-            const auto du_q = phi_velocity.get_gradient(q);
-            const auto point_q = phi_discharge.quadrature_point(q);
+            const auto z_q = phi_height.get_value(q); // free-surface
+            const auto q_q = phi_discharge.get_value(q); // discharge
+            const auto du_q = phi_velocity.get_gradient(q); // velocity gradient for the viscous flux computation
+            const auto point_q = phi_discharge.quadrature_point(q); // quadrature_point(q)returns the physical coordinates of the
+                                                                    // q-th quadrature point in the current cell batch, which is 
+                                                                    // needed to evaluate the problem data (e.g., wind stress, Coriolis force) at that point.
 
-            const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0];
+            const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0]; // we get the bathymetry value at the q-th quadrature point in the current cell batch
+                                                                           // from the data_quadrature_cell_0 object, which stores the precomputed bathymetry values at quadrature points for each cell batch.
             const auto data_onthefly_q =
-              evaluate_function<dim, Number, dim+1>(*bc->problem_data, point_q, 2);
-		// parte di moltiplicazione tra q e u
+              evaluate_function<dim, Number, dim+1>(*bc->problem_data, point_q, 2); // we evaluate the external problem data (e.g., wind stress,Coriolis force)
+		        // The operations performed here are:
+            // 1. Compute the water depth h from the free-surface height zeta and bathymetry zb.
+            // 2. Compute the advective and diffusive fluxes using the discharge q,
+            //    the velocity gradient du, and the water depth h.
+            // 3. Submit the computed fluxes to phi_discharge for integration, i.e multiply by the test functions and integrate over the cell.
             phi_discharge.submit_gradient(
               model.advective_diffusive_flux(
                 z_q, q_q, model.depth(z_q, zb_q)*du_q, zb_q, area_cell),
               q);
-            // non metto nella parte non stiff, ne la pressure ne la friction
+            // Here we also compute the non-stiff source term, which includes the wind stress and Coriolis force contributions.
+            // The source term is computed using the discharge q, the water depth h, and the external problem data (e.g., wind stress, Coriolis force) evaluated at the quadrature point.
+            // Pressure and friction are not included in the non-stiff source term, since they are treated separately in the stiff part of the operator.
+            // submit_value() is used to submit the computed source term to phi_discharge for integration, i.e multiply by the test functions and integrate over the cell.
             phi_discharge.submit_value(
               model.source_no_pressure_no_friction(q_q, data_onthefly_q),
               q);
           }
-
+        // Finally, as noted in the previous function, integrate_scatter() performs two operations: integration and scattering.
+        // Notice that in this case we are integrating both the values and the gradients, since we have submitted both contributions to phi_discharge.
+        // The symbol | is an OR operator (not the logical OR operator), and it combines both the integrals over values and gradients into a single evaluation flag,
+        // so it computes the sum of the two integral contributions and scatters them into the destination vector dst.
         phi_discharge.integrate_scatter(EvaluationFlags::values |
                                         EvaluationFlags::gradients,
                                        dst);
       }
   }
+
+  // MOMENTUM EQUATION - STIFF CONTRIBUTIONS
+  // Computes the cell-volume contribution of the stiff operator L,
+  // including the pressure-gradient and bottom-friction source terms.
+  //
+  // The free-surface elevation zeta, its gradient, and the discharge q
+  // are evaluated at quadrature points, together with the bathymetry
+  // and friction coefficient.
+  //
+  // Mathematically, the volume contribution corresponds to:
+  // integral_K S_stiff(zeta_h, q_h, grad(zeta_h)) · varphi_i dOmega,
+  // where varphi_i is a vector-valued test function for the discharge.
+  //
+  // The resulting contributions are integrated and scattered into dst.
 
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
@@ -271,19 +407,23 @@ namespace SpaceDiscretization
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         phi_height.reinit(cell);
+        // In this operator we need both the values and the gradients of the free-surface height zeta, since they are used in the pressure-gradient term.
         phi_height.gather_evaluate(src[0], EvaluationFlags::values | EvaluationFlags::gradients);
         phi_discharge.reinit(cell);
         phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
-
+        // Now we loop over the quadrature points of the cell batch and compute the stiff contributions to the momentum equation.
         for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
           {
-            const auto z_q = phi_height.get_value(q);
-            const auto dz_q = phi_height.get_gradient(q);
-            const auto q_q = phi_discharge.get_value(q);
+            const auto z_q = phi_height.get_value(q); // free-sruface height zeta at the q-th quadrature point
+            const auto dz_q = phi_height.get_gradient(q); // gradient of the free-surface height zeta at the q-th quadrature point
+            const auto q_q = phi_discharge.get_value(q); // discharge q at the q-th quadrature point
 
-            const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0];
-            const auto cf_q = data_quadrature_cell_0.get_data(cell, q)[1];
-	    // termine stiff è L, e qui stiamo loopando sulle celle, dove ho contributo di zeta e friction
+            const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0]; // bathymetry at the q-th quadrature point
+            const auto cf_q = data_quadrature_cell_0.get_data(cell, q)[1]; // friction coefficient at the q-th quadrature point
+            // The operations performed here are:
+            // 1. Compute the pressure-gradient source term using model.source_pressure_and_friction(),
+            //    which is g * h * grad(zeta) + bottom_friction(q, cf)
+            // 2. Submit the computed source term to phi_discharge value for integration, i.e multiply by the test functions to be integrated over the cell.
             phi_discharge.submit_value(
               model.source_pressure_and_friction(z_q, q_q, dz_q, zb_q, cf_q),
               q);
@@ -294,6 +434,19 @@ namespace SpaceDiscretization
       }
   }
 
+  // MOMENTUM EQUATION - PRESSURE GRADIENT CONTRIBUTION
+  // Computes the cell-volume contribution of the pressure operator E,
+  // excluding the bottom-friction term.
+  //
+  // The free-surface elevation zeta and its gradient are evaluated
+  // at quadrature points, together with the bathymetry, to reconstruct
+  // the water depth h.
+  //
+  // Mathematically, the volume contribution corresponds to:
+  // integral_K (-g * h * grad(zeta_h)) · varphi_i dOmega,
+  // where varphi_i is a vector-valued test function for the discharge.
+  //
+  // The resulting contributions are integrated and scattered into dst.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_cell_pressure_discharge(
@@ -308,16 +461,22 @@ namespace SpaceDiscretization
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         phi_height.reinit(cell);
+        // In this operator we need both the values and the gradients of the free-surface height zeta, since they are used in the pressure-gradient term.
         phi_height.gather_evaluate(src[0], EvaluationFlags::values | EvaluationFlags::gradients);
         phi_discharge.reinit(cell);
 
         for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
           {
-            const auto z_q = phi_height.get_value(q);
-            const auto dz_q = phi_height.get_gradient(q);
+            const auto z_q = phi_height.get_value(q); // free-surface height zeta at the q-th quadrature point
+            const auto dz_q = phi_height.get_gradient(q); // gradient of the free-surface height zeta at the q-th quadrature point
 
-            const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0];
+            const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0]; // bathymetry at the q-th quadrature point
+            // The operations performed here are:
+            // 1. Compute the pressure-gradient source term using model.source_pressure(),
+            //    which is g * h * grad(zeta)
+            // 2. Submit the computed source term to phi_discharge value for integration, i.e multiply by the test functions to be integrated over the cell.
 
+            // ATTENZIONE: CONTROLLA IL FATTO CHE SIA grad(zeta) e non grad(psi)
             phi_discharge.submit_value(
               model.source_pressure(z_q, dz_q, zb_q),
               q);
@@ -336,14 +495,62 @@ namespace SpaceDiscretization
   // treated implicitly, we define both stiff and non-stiff face and boundary
   // operators: the non-stiff operator contains the numerical advective
   // fluxes, while the stiff one implements the pressure fluxes.
+
+  // So here are implemented all the face operators, which are similar to those of the base class, but with some differences in the numerical fluxes.
+  // In particular we can notice them as the sums over the faces EPS in the semi-discrete formulation of the shallow water equations.
+  
+  // CONTINUITY EQUATION - FACE CONTRIBUTIONS TO F
+  // Computes the interior-face contribution to the known term F,
+  // using the intermediate discharge Q*.
+  //
+  // The free-surface elevation and discharge are evaluated on both
+  // sides of each face (minus and plus). The discharge is reconstructed
+  // using the local velocities and a common bathymetry.
+  //
+  // Mathematically, the face contribution in Eq. (9b) is:
+  // - integral_F ( {{Q*}} + (lambda/2) [[zeta*]] ) · [[psi_i]] dGamma,
+  // where {{Q*}} denotes the average discharge and [[.]] the DG jump.
+  //
+  // IMPORTANT DIFFERENCE FROM THE PAPER:
+  // The current implementation includes only the centered average
+  // of the reconstructed discharge. The stabilization term
+  // (lambda/2) [[zeta*]] appearing in Eq. (9b) is not implemented here.
+  //
+  // The numerical contribution is submitted with opposite signs
+  // on the minus and plus sides, then integrated and scattered into dst.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_face_height(
-    const MatrixFree<dim, Number> &,
-    LinearAlgebra::distributed::Vector<Number>                    &dst,
-    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const MatrixFree<dim, Number> &, // information regarding the matrix-free data structure, via a dealii::MatrixFree object
+    LinearAlgebra::distributed::Vector<Number>                    &dst, // dst = destination vector, where the result of the operator is stored,
+                                                                        // is a distributed vector, which is a vector that is distributed across multiple processors in a parallel computing environment
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src, // vector of distributed vectors, which contains the input data for the operator,
+                                                                        // check the comment in local_apply_cell_height for more details.
     const std::pair<unsigned int, unsigned int>                   &face_range) const
   {
+    // FEFaceEvaluation evaluates finite element quantities at face quadrature points.
+    // Unlike FEEvaluation, which operates on cell interiors, FEFaceEvaluation
+    // operates on the faces shared by neighboring cells.
+    //
+    // Template parameters:
+    // dim        : spatial dimension.
+    // -1         : polynomial degree determined at runtime.
+    // degree + 2 : number of quadrature points per face direction.
+    // 1 or dim    : number of components (scalar height / vector discharge).
+    // Number     : numerical type used for computations.
+    //
+    // Constructor arguments:
+    // data       : MatrixFree object containing the finite element information.
+    // face_range : range of faces to process.
+    // true/false : interior (-) or exterior (+) side of the face.
+    // 0 / 1      : DoFHandler index (0 = height, 1 = discharge).
+    // 1          : quadrature formula index.
+    //
+    // The minus (-) and plus (+) evaluators provide the values and gradients
+    // from both sides of an interface, needed to compute numerical fluxes.
+    // phi_height_m = evaluator for the height on the interior side of the face, i.e. minus side
+    // phi_height_p = evaluator for the height on the exterior side of the face, i.e. plus side
+    // etc for the discharge.
     FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_m(data, face_range,
                                                                       true, 0, 1);
     FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_p(data, face_range,
@@ -352,35 +559,47 @@ namespace SpaceDiscretization
                                                                       true, 1, 1);
     FEFaceEvaluation<dim, -1, degree + 2, dim, Number> phi_discharge_p(data, face_range,
                                                                       false, 1, 1);
-
+    // Now we loop over the faces in the specified range
     for (unsigned int face = face_range.first; face < face_range.second; ++face)
       {
         phi_height_p.reinit(face);
-        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the plus side of the face
         phi_discharge_p.reinit(face);
-        phi_discharge_p.gather_evaluate(src[1], EvaluationFlags::values);
+        phi_discharge_p.gather_evaluate(src[1], EvaluationFlags::values); // discharge on the plus side of the face
 
         phi_height_m.reinit(face);
-        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the minus side of the face
         phi_discharge_m.reinit(face);
-        phi_discharge_m.gather_evaluate(src[1], EvaluationFlags::values);
-
+        phi_discharge_m.gather_evaluate(src[1], EvaluationFlags::values); // discharge on the minus side of the face
+        // Now we loop over the quadrature points of the face and compute the numerical fluxes for the height equation.
         for (unsigned int q = 0; q < phi_height_m.n_q_points; ++q)
           {
-            const auto z_m    = phi_height_m.get_value(q);
-            const auto z_p    = phi_height_p.get_value(q);
-            const auto normal = phi_discharge_m.normal_vector(q);
-            const auto zb_m   = data_quadrature_face.get_data(face, 2*q);
-            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);
-
+            const auto z_m    = phi_height_m.get_value(q); // free-surface height on the minus side of the face at the q-th quadrature point
+            const auto z_p    = phi_height_p.get_value(q); // free-surface height on the plus side of the face at the q-th quadrature point
+            const auto normal = phi_discharge_m.normal_vector(q); // normal vector at the q-th quadrature point, pointing from the minus side to the plus side of the face
+            // The bathymetry values on both sides of the face are obtained from the precomputed data_quadrature_face object. And are stored
+            // in an even-odd fashion, where the even indices correspond to the minus side and the odd indices to the plus side of the face.
+            const auto zb_m   = data_quadrature_face.get_data(face, 2*q); // bathymetry on the minus side of the face at the q-th quadrature point (even index)
+            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1); // bathymetry on the plus side of the face at the q-th quadrature point (odd index)
+            // Computing the velocities on both sides using the model.velocity() function
             const auto v_m = model.velocity(z_m, phi_discharge_m.get_value(q), zb_m);
             const auto v_p = model.velocity(z_p, phi_discharge_p.get_value(q), zb_p);
-            const auto zb_star = std::min(zb_m, zb_p);
-            const auto flux_m = model.depth(z_m, zb_star) * v_m;
-            const auto flux_p = model.depth(z_p, zb_star) * v_p;
-
-            auto numerical_flux_p = 0.5 * (flux_m * normal + flux_p * normal);
-
+            const auto zb_star = std::min(zb_m, zb_p); // taking the minimum bathymetry, to ensure well balancing
+            // So zb_star is a reconstruction of the bathymetry at the interface, which is used to compute the water depth on both sides of the face.
+            // Now we compute the numerical fluxes for the height equation using the reconstructed water depths and velocities on both sides of the face.
+            // In the continuity equation, the mass flux is the discharge q = h * v, where h = max(height + bathymetry, 0) 
+            // Here, we reconstruct the discharge on both sides of the face using
+            // the original velocities and the water depths computed with zb_star.
+            const auto flux_m = model.depth(z_m, zb_star) * v_m; // computing the reconstructed discharge on the minus side
+            const auto flux_p = model.depth(z_p, zb_star) * v_p; // computing the reconstructed discharge on the plus side
+            
+            // Compute the average reconstructed discharge {{q}} and project it
+            // onto the face normal to obtain the scalar normal flux.
+            auto numerical_flux_p = 0.5 * (flux_m * normal + flux_p * normal); 
+            // Account for the jump of the test function:
+            // [[psi_i]] = psi_i_minus * n_minus + psi_i_plus * n_plus,
+            // with n_plus = -n_minus.
+            // So the opposite signs implement the term -{{q}} · [[psi_i]].
             phi_height_m.submit_value(-numerical_flux_p, q);
             phi_height_p.submit_value(numerical_flux_p, q);
           }
@@ -390,6 +609,24 @@ namespace SpaceDiscretization
       }
   }
 
+  // MOMENTUM EQUATION - NON-STIFF FACE CONTRIBUTIONS TO G
+  // Computes the interior-face contribution of the non-stiff operator G,
+  // associated with the numerical advective flux of the momentum equation.
+  //
+  // The free-surface elevation and discharge are evaluated on both sides
+  // of each face (minus and plus), together with the local bathymetry.
+  //
+  // The modified Lax-Friedrichs (Rusanov) numerical flux consists of:
+  // - The centered average of the advective momentum fluxes.
+  // - A stabilization term proportional to lambda and the difference
+  //   between the hydrostatically reconstructed discharges.
+  //
+  // Mathematically, the numerical flux is:
+  // 0.5 * (F_minus + F_plus) * n + 0.5 * lambda * (q_minus - q_plus),
+  // where lambda is the maximum characteristic wave speed across the face.
+  //
+  // The resulting numerical flux is submitted with opposite signs
+  // on the minus and plus sides, then integrated and scattered into dst.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_face_nonstiff_discharge(

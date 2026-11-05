@@ -343,6 +343,7 @@ namespace Model
       postproc_vars_name.push_back("velocity");
   }
 
+  // depth is the computation for the water depth i.e h = max(0, zeta + bathymetry). This is used to avoid negative water depth in the case of dry areas.
   template <typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Number
@@ -353,6 +354,8 @@ namespace Model
     return std::max(height + bathymetry, Number(1e-12));
   }
 
+  // The function velocity computes the velocity from the vector of conserved variables, using the formula $v = q / h$.
+  // The velocity is computed with a modified water depth in order to avoid the division by a very small number in shallow areas
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
@@ -361,12 +364,13 @@ namespace Model
       const Tensor<1, dim, Number> &discharge,
       const Number                  bathymetry) const
   {
-    const Number h = depth(height, bathymetry);
-    const Number h4 = h*h*h*h;
+    const Number h = depth(height, bathymetry); // h = max(0, zeta + bathymetry)
+    const Number h4 = h*h*h*h; // h4 = h^4
+    // Now we compute the inverse depth: inverse_depth = (sqrt(2) * h ) / sqrt(h^4 + cu^4)
     const Number inverse_depth = std::sqrt(2.) * h / std::sqrt(h4 + std::max(h4, Number(cu4)));
 
 
-    return discharge * inverse_depth;
+    return discharge * inverse_depth; // v = q / h, but we use the modified depth to avoid division by zero
   }
 
   template <typename Number>
@@ -383,6 +387,8 @@ namespace Model
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
+    // The mass flux is literally F(q) = q  in the case of Shallow water equations,
+    // but we define it as the product of depth and velocity for consistency with the other fluxes.
     ShallowWater::mass_flux(
       const Tensor<1, dim, Number> &discharge) const
   {
@@ -409,6 +415,18 @@ namespace Model
     return flux;
   }
 
+  
+  // advective_diffusive_flux computes the advective and diffusive fluxes
+  // of the momentum equation.
+  // In the paper, only the advective flux is considered.
+  // In the current code, the advective term is commented out,
+  // so only the viscous contribution is computed.
+  //
+  // The viscous flux is based on the symmetric velocity gradient
+  // and a correction involving the velocity divergence:
+  // F_visc = -nu * (grad(u) + grad(u)^T - div(u) * I),
+  // where nu is the viscosity coefficient and I is the identity tensor.
+
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Tensor<1, dim, Number>>
@@ -422,10 +440,12 @@ namespace Model
     const Tensor<1, dim, Number> v =
       velocity<dim>(height, discharge, bathymetry);
 
+    // Compute the viscosity coefficient nu and the velocity divergence.
     const Number nu = viscosity_coefficient.value<dim, Number>(gradient_velocity, area);
     const Number div = gradient_velocity[0][0] + gradient_velocity[1][1];
 
-    Tensor<1, dim, Tensor<1, dim, Number>> flux;
+    Tensor<1, dim, Tensor<1, dim, Number>> flux; // tensor of deal.II type Tensor<1, dim, Tensor<1, dim, Number>> to store the fluxes of the advective and diffusive terms.
+    // Compute the components of the viscous stress contribution.
     for (unsigned int d = 0; d < dim; ++d)
       for (unsigned int e = 0; e < dim; ++e)
         flux[e][d] = //discharge[e] * v[d]
@@ -492,6 +512,8 @@ namespace Model
     return source;
   }
 
+  // The next function computes the source term without pressure and friction contributions, 
+  // which are the stiffest contributions to the source term. This is used in the semi-implicit time integration scheme.
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
@@ -519,6 +541,8 @@ namespace Model
     return -bottom_friction.source<dim, Number>(v, drag_coefficient, h);
   }
 
+  // The function source_pressure_and_friction computes the source term with pressure and friction contributions,
+  // which are the stiffest contributions to the source term. This is used in the semi-implicit time integration scheme.
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
@@ -532,11 +556,19 @@ namespace Model
     const Tensor<1, dim, Number> v =
       velocity<dim>(height, discharge, bathymetry);
     const Number h = depth(height, bathymetry);
-
+    // Compute the stiff source terms in the momentum equation:
+    // gravitational pressure gradient: -g * h * grad(zeta)
+    // bottom friction: -gamma(v, h, drag_coefficient)
+    //
+    // Here, h = zeta + zb is the water depth, and v = q / h
+    // is the velocity reconstructed from the discharge.
     return - g * h * gradient_height
            - bottom_friction.source<dim, Number>(v, drag_coefficient, h);
   }
 
+  // The function source_pressure computes the source term with pressure contribution,
+  // which is the stiffest contribution to the source term. This is used in the semi-implicit time integration scheme.
+  // The pressure term is computed as -g * h * grad(zeta), where h = zeta + zb is the water depth.
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
