@@ -122,6 +122,8 @@ namespace NumericalFlux
   // \begin{equation*}
   //   \rpth{\ave{\disc^{*,(m)}} + \frac{\lambda^{(m)}}{2}\jump{\zeta^{*,(m)}}}
   // \end{equation*}
+  // This is literally in the continuity equation (i.e. the free surf equation):
+  // {{q^(*,(m))}} + lambda^{(m)}/2 * [[zeta^(*,(m))]] 
   //
   // In the computation of the integral at the interface between two elements
   // a Rusanov flux \cite{rusanov:1962} is used, so that
@@ -130,7 +132,8 @@ namespace NumericalFlux
   //   \lambda^{(m)} = \max\rpth{\left|\vel^{+,(m)} \cdot \bm{n}^{+}\right| + \sqrt{gh^{+,(m)}},
   //      \left|\vel^{-,(m)} \cdot \bm{n}^{-}\right| + \sqrt{gh^{-,(m)}}}.
   // \end{equation*}
-  //
+  // Indeed in the Rusanov flux, the stabilization term is proportional to the maximum characteristic wave speed across the interface.
+  // 
   // We employ the so-called hydrostatic reconstruction (Audusse,2004, Gross,2002),
   // which consists in selecting a single-valued bathymetry at the interface when
   // the bathymetry is discontinuous, i.e.
@@ -138,7 +141,7 @@ namespace NumericalFlux
   // \begin{equation*}
   //    z^{*}_{b} = \min\rpth{z_{b}^{-}, z_{b}^{+}},
   // \end{equation*}
-  //
+  // (we choose the minimum bathymetry to ensure well balancing)
   // and modifying the water depth, the discharge and the free-surface, accordingly:
   //
   // \begin{eqnarray*}
@@ -158,6 +161,26 @@ namespace NumericalFlux
   // form, we multiply by the result by the normal vector for all terms in the
   // equation. In these multiplications, the `operator*` defined above enables
   // a compact notation similar to the mathematical definition.
+
+  // CONTINUITY EQUATION - LOCAL LAX-FRIEDRICHS (RUSANOV) MASS FLUX
+  // Computes the numerical mass flux across an interior face,
+  // including the Rusanov stabilization and hydrostatic reconstruction.
+  //
+  // The maximum characteristic wave speed lambda is computed from
+  // the normal velocities and gravity wave speeds on both sides.
+  //
+  // A common bathymetry zb_star = min(zb_m, zb_p) is used to reconstruct
+  // the water depths, discharges, and free-surface elevations.
+  //
+  // Mathematically, the numerical flux projected onto the face normal is:
+  // 0.5 * (q_star_m + q_star_p) · n
+  // + 0.5 * lambda * (zeta_star_m - zeta_star_p)
+  //
+  // The first term is the centered average of the reconstructed discharge,
+  // while the second is the Rusanov stabilization term.
+  //
+  // This corresponds to the numerical mass flux appearing in Eq. (9b)
+  // for the face contribution to F.
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Number
@@ -170,23 +193,24 @@ namespace NumericalFlux
       const Number                  zb_m,
       const Number                  zb_p) const
   {
-    const auto v_m = model.velocity<dim>(z_m, q_m, zb_m);
-    const auto v_p = model.velocity<dim>(z_p, q_p, zb_p);
+    const auto v_m = model.velocity<dim>(z_m, q_m, zb_m); // velocity on the minus side of the face
+    const auto v_p = model.velocity<dim>(z_p, q_p, zb_p); // velocity on the plus side of the face
 
     const auto lambda_m = std::abs(v_m * normal)
-      + std::sqrt(model.square_wavespeed(z_m, zb_m));
+      + std::sqrt(model.square_wavespeed(z_m, zb_m)); // maximum characteristic wave speed on the minus side of the face
     const auto lambda_p = std::abs(v_p * normal)
-      + std::sqrt(model.square_wavespeed(z_p, zb_p));
+      + std::sqrt(model.square_wavespeed(z_p, zb_p)); // maximum characteristic wave speed on the plus side of the face
 
-    const auto lambda = std::max(lambda_p, lambda_m);
-    const auto zb_star = std::min(zb_m, zb_p);
+    const auto lambda = std::max(lambda_p, lambda_m); // maximum characteristic wave speed across the interface
+    const auto zb_star = std::min(zb_m, zb_p); // common bathymetry at the interface for hydrostatic reconstruction
 
-    const auto flux_m = model.depth(z_m, zb_star) * v_m;
-    const auto flux_p = model.depth(z_p, zb_star) * v_p;
+    const auto flux_m = model.depth(z_m, zb_star) * v_m; // reconstructed discharge on the minus side of the face
+    const auto flux_p = model.depth(z_p, zb_star) * v_p; // reconstructed discharge on the plus side of the face
 
-    const auto zcorr_m = std::max(z_m, -zb_star);
-    const auto zcorr_p = std::max(z_p, -zb_star);
-
+    const auto zcorr_m = std::max(z_m, -zb_star); // reconstructed free-surface elevation on the minus side of the face
+    const auto zcorr_p = std::max(z_p, -zb_star); // reconstructed free-surface elevation on the plus side of the face
+    // The numerical mass flux is computed as the average of the reconstructed discharges
+    // plus the Rusanov stabilization term based on the jump in the reconstructed free-surface
     return 0.5 * (flux_m * normal + flux_p * normal) +
            0.5 * lambda * (zcorr_m - zcorr_p);
   }
@@ -196,7 +220,31 @@ namespace NumericalFlux
   // \begin{eqnarray*}
   //   \rpth{\ave{\disc^{*,(m)} \otimes \vel^{(m)}} + \frac{\lambda^{(m)}}{2}\tjump{\disc^{*,(m)}}}
   // \end{equation*}
+  // this is literally in the momentum equation (i.e. the discharge equation):
+  // {{q^(*,(m))}} otimes v^{(m)} + lambda^{(m)}/2 * <<q^(*,(m))>> 
   //
+  // MOMENTUM EQUATION - LOCAL LAX-FRIEDRICHS (RUSANOV) ADVECTIVE FLUX
+  // Computes the numerical advective momentum flux across an interior face,
+  // including Rusanov stabilization and hydrostatic reconstruction.
+  //
+  // The maximum characteristic wave speed lambda is computed from
+  // the normal velocities and gravity wave speeds on both sides.
+  //
+  // A common bathymetry zb_star = min(zb_m, zb_p) is used to reconstruct
+  // the water depths and discharges on both sides of the interface.
+  //
+  // The advective momentum fluxes are then computed from the reconstructed
+  // discharges using model.advective_flux().
+  //
+  // Mathematically, the numerical flux projected onto the face normal is:
+  // 0.5 * (F_adv_m + F_adv_p) * n
+  // + 0.5 * lambda * (q_star_m - q_star_p)
+  //
+  // The first term is the centered average of the advective momentum fluxes,
+  // while the second is the Rusanov stabilization term based on the jump
+  // in the reconstructed discharge.
+  //
+  // The resulting numerical flux is a vector with dim components.
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Number>
@@ -209,22 +257,24 @@ namespace NumericalFlux
       const Number                  zb_m,
       const Number                  zb_p) const
   {
-    const auto v_m = model.velocity<dim>(z_m, q_m, zb_m);
-    const auto v_p = model.velocity<dim>(z_p, q_p, zb_p);
+    const auto v_m = model.velocity<dim>(z_m, q_m, zb_m); // velocity on the minus side of the face
+    const auto v_p = model.velocity<dim>(z_p, q_p, zb_p); // velocity on the plus side of the face
 
     const auto lambda_m = std::abs(v_m * normal)
-      + std::sqrt(model.square_wavespeed(z_m, zb_m));
+      + std::sqrt(model.square_wavespeed(z_m, zb_m)); // maximum characteristic wave speed on the minus side of the face
     const auto lambda_p = std::abs(v_p * normal)
-      + std::sqrt(model.square_wavespeed(z_p, zb_p));
+      + std::sqrt(model.square_wavespeed(z_p, zb_p)); // maximum characteristic wave speed on the plus side of the face
 
-    const auto lambda = std::max(lambda_p, lambda_m);
-    const auto zb_star = std::min(zb_m, zb_p);
+    const auto lambda = std::max(lambda_p, lambda_m); // maximum characteristic wave speed across the interface
+    const auto zb_star = std::min(zb_m, zb_p); // common bathymetry at the interface for hydrostatic reconstruction
 
-    const auto hu_m = model.depth(z_m, zb_star) * v_m;
-    const auto hu_p = model.depth(z_p, zb_star) * v_p;
-    const auto flux_m = model.advective_flux<dim>(z_m, hu_m, zb_star);
-    const auto flux_p = model.advective_flux<dim>(z_p, hu_p, zb_star);
-
+    const auto hu_m = model.depth(z_m, zb_star) * v_m; // reconstructed discharge on the minus side of the face
+    const auto hu_p = model.depth(z_p, zb_star) * v_p; // reconstructed discharge on the plus side of the face
+    const auto flux_m = model.advective_flux<dim>(z_m, hu_m, zb_star); // advective momentum flux, i.e. F_adv_m = q_star_m otimes v_m, on the minus side of the face
+    const auto flux_p = model.advective_flux<dim>(z_p, hu_p, zb_star); // advective momentum flux, i.e. F_adv_p = q_star_p otimes v_p, on the plus side of the face
+    // The numerical advective flux is computed as the average of the advective momentum fluxes
+    // plus the Rusanov stabilization term based on the jump in the reconstructed discharges
+    // hence computing: {{q^(*,(m))}} otimes v^{(m)} + lambda^{(m)}/2 * <<q^(*,(m))>> 
     return 0.5 * (flux_m * normal + flux_p * normal) +
            0.5 * lambda * (hu_m - hu_p);
   }
@@ -232,6 +282,7 @@ namespace NumericalFlux
 #ifdef OCEANO_WITH_TRACERS
   // The tracer numerical flux follows similarly to the numerical mass flux as we
   // have to preserve the consistency with the continuity equation.
+  // So the numerical flux is the same as the numerical mass flux but multiplied by the tracer concentration.
   template <int dim, int n_tra, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, n_tra, Number>

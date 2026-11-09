@@ -112,14 +112,20 @@ namespace NumericalFlux
       const Number                      zb_m,
       const Number                      zb_p) const
   {
-    const auto zb_star = std::min(zb_m, zb_p);
-    const auto h_p = model.depth(z_p, zb_star);
-    const auto zcorr_m = std::max(z_m, -zb_star);
-    const auto zcorr_p = std::max(z_p, -zb_star);
+    const auto zb_star = std::min(zb_m, zb_p); // hydrostatic reconstruction of the bathymetry at the interface
+    const auto h_p = model.depth(z_p, zb_star); // depth on the plus side of the interface
+    // h_m = depth on the minus side of the interface, is computed only for the center flux, not for the outer flux, as it is not needed.
+    const auto zcorr_m = std::max(z_m, -zb_star); // free-surface height on the minus side of the interface, corrected for wet-dry interface
+    const auto zcorr_p = std::max(z_p, -zb_star); // free-surface height on the plus side of the interface, corrected for wet-dry interface
 #define NUMERICALFLUXBASE_CENTER
 #undef  NUMERICALFLUXBASE_OUTER
 #if defined NUMERICALFLUXBASE_CENTER
-    const auto h_m = model.depth(z_m, zb_star);
+    const auto h_m = model.depth(z_m, zb_star); // depth on the minus side of the interface
+    // we need to get g from the model, as it is a member of the model class.
+    // Computes the numerical pressure flux corresponding to
+    // g * {{h*}} * {{phi_i}} · [[zeta*]], excluding the test-function
+    // contribution, which is handled by submit_value().
+    // (so it appears 0.25 as a factor, as we have 0.5 for the average and 0.5 for the jump)
     return model.g * 0.25 * (h_p + h_m) * (zcorr_p - zcorr_m) * normal;
 #elif defined NUMERICALFLUXBASE_OUTER
     (void) zb_m;

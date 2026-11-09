@@ -395,7 +395,9 @@ namespace Model
     return discharge;
 
   }
-
+  
+  // The flux for the discharge equation is F(q) = q * v, where v is the velocity.
+  // The advective flux is computed as the outer product of the discharge and the velocity.
   template <int dim, typename Number>
   inline DEAL_II_ALWAYS_INLINE //
     Tensor<1, dim, Tensor<1, dim, Number>>
@@ -410,7 +412,7 @@ namespace Model
     Tensor<1, dim, Tensor<1, dim, Number>> flux;
     for (unsigned int d = 0; d < dim; ++d)
       for (unsigned int e = 0; e < dim; ++e)
-        flux[e][d] = 0.0;// discharge[e] * v[d];
+        flux[e][d] = discharge[e] * v[d]; // 0.0
 
     return flux;
   }
@@ -448,7 +450,7 @@ namespace Model
     // Compute the components of the viscous stress contribution.
     for (unsigned int d = 0; d < dim; ++d)
       for (unsigned int e = 0; e < dim; ++e)
-        flux[e][d] = //discharge[e] * v[d]
+        flux[e][d] = discharge[e] * v[d]
           - nu * (gradient_velocity[e][d] + gradient_velocity[d][e]);
     for (unsigned int e = 0; e < dim; ++e)
       flux[e][e] += nu * div;

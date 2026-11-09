@@ -476,7 +476,7 @@ namespace SpaceDiscretization
             //    which is g * h * grad(zeta)
             // 2. Submit the computed source term to phi_discharge value for integration, i.e multiply by the test functions to be integrated over the cell.
 
-            // ATTENZIONE: CONTROLLA IL FATTO CHE SIA grad(zeta) e non grad(psi)
+            
             phi_discharge.submit_value(
               model.source_pressure(z_q, dz_q, zb_q),
               q);
@@ -647,23 +647,24 @@ namespace SpaceDiscretization
     for (unsigned int face = face_range.first; face < face_range.second; ++face)
       {
         phi_height_p.reinit(face);
-        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the plus side of the face
         phi_discharge_p.reinit(face);
-        phi_discharge_p.gather_evaluate(src[1], EvaluationFlags::values);
+        phi_discharge_p.gather_evaluate(src[1], EvaluationFlags::values); // discharge on the plus side of the face
 
         phi_height_m.reinit(face);
-        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the minus side of the face
         phi_discharge_m.reinit(face);
-        phi_discharge_m.gather_evaluate(src[1], EvaluationFlags::values);
-
+        phi_discharge_m.gather_evaluate(src[1], EvaluationFlags::values); // discharge on the minus side of the face
+        // Now we loop over the quadrature points of the face and compute the numerical fluxes for the momentum equation.
         for (unsigned int q = 0; q < phi_discharge_m.n_q_points; ++q)
           {
-            const auto z_m    = phi_height_m.get_value(q);
-            const auto z_p    = phi_height_p.get_value(q);
-            const auto normal = phi_discharge_m.normal_vector(q);
-            const auto zb_m   = data_quadrature_face.get_data(face, 2*q);
-            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);
-
+            const auto z_m    = phi_height_m.get_value(q); // free-surface height on the minus side of the face at the q-th quadrature point
+            const auto z_p    = phi_height_p.get_value(q); // free-surface height on the plus side of the face at the q-th quadrature point
+            const auto normal = phi_discharge_m.normal_vector(q); // normal vector at the q-th quadrature point, pointing from the minus side to the plus side of the face
+            const auto zb_m   = data_quadrature_face.get_data(face, 2*q); // bathymetry on the minus side of the face at the q-th quadrature point (even index)
+            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);  // bathymetry on the plus side of the face at the q-th quadrature point (odd index)
+            // Compute the numerical flux for the momentum equation using the modified Lax-Friedrichs (Rusanov) flux.
+            // hence computing: {{q^(*,(m))}} otimes v^{(m)} + lambda^{(m)}/2 * <<q^(*,(m))>> 
             auto numerical_flux_p =
               num_flux.numerical_advflux_weak(z_m,
                                               z_p,
@@ -672,7 +673,8 @@ namespace SpaceDiscretization
                                               normal,
                                               zb_m,
                                               zb_p);
-
+            // The numerical flux for the minus side is simply the negative of the plus side, since we are computing the jump across the face.
+            // Everything gets then submitted to the respective FEFaceEvaluation object of discharge for integration and scattering into the destination vector dst.
             phi_discharge_m.submit_value(-numerical_flux_p, q);
             phi_discharge_p.submit_value(numerical_flux_p, q);
           }
@@ -682,6 +684,25 @@ namespace SpaceDiscretization
       }
   }
 
+  // MOMENTUM EQUATION - STIFF FACE CONTRIBUTIONS
+  // Computes the interior-face contribution of the stiff operator L,
+  // associated with the pressure term in the momentum equation.
+  //
+  // The free-surface elevation is evaluated on both sides of each face
+  // (minus and plus), together with the corresponding bathymetry.
+  //
+  // The numerical pressure flux is computed using
+  // numerical_presflux_strong(), separately for the minus and plus sides,
+  // with reversed input states and bathymetry on the plus side.
+  //
+  // Unlike the cell-volume stiff contribution, this face operator
+  // contains only pressure terms; bottom friction is not included.
+  //
+  // The numerical fluxes are submitted to the discharge test functions
+  // on both sides, then integrated and scattered into dst.
+  //
+  // This face operator is also reused in the pressure correction step
+  // following the solution of the free-surface equation.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_face_stiff_discharge(
@@ -702,21 +723,23 @@ namespace SpaceDiscretization
     for (unsigned int face = face_range.first; face < face_range.second; ++face)
       {
         phi_height_p.reinit(face);
-        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the plus side of the face
         phi_discharge_p.reinit(face);
 
         phi_height_m.reinit(face);
-        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the minus side of the face
         phi_discharge_m.reinit(face);
 
         for (unsigned int q = 0; q < phi_discharge_m.n_q_points; ++q)
           {
-            const auto z_m    = phi_height_m.get_value(q);
-            const auto z_p    = phi_height_p.get_value(q);
+            const auto z_m    = phi_height_m.get_value(q); // free-surface height on the minus side of the 
+            const auto z_p    = phi_height_p.get_value(q); 
             const auto normal = phi_discharge_m.normal_vector(q);
             const auto zb_m   = data_quadrature_face.get_data(face, 2*q);
             const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);
-            // Qui nel loop sulle facce è loop di gamma, dove ho i valori alle due facce + e - e compare solo la pressione zeta
+            // Computes the numerical pressure flux corresponding to
+            // g * {{h*}} * {{phi_i}} · [[zeta*]], excluding the test-function
+            // contribution, which is handled by submit_value().
             auto numerical_flux_m =
               -num_flux.numerical_presflux_strong(z_m,
                                                  z_p,
@@ -730,7 +753,7 @@ namespace SpaceDiscretization
                                                  zb_p,
                                                  zb_m);
 
-            phi_discharge_m.submit_value(numerical_flux_m, q);
+            phi_discharge_m.submit_value(numerical_flux_m, q); 
             phi_discharge_p.submit_value(numerical_flux_p, q);
           }
 
