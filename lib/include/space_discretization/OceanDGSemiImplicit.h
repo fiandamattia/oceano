@@ -732,12 +732,12 @@ namespace SpaceDiscretization
 
         for (unsigned int q = 0; q < phi_discharge_m.n_q_points; ++q)
           {
-            const auto z_m    = phi_height_m.get_value(q); // free-surface height on the minus side of the 
-            const auto z_p    = phi_height_p.get_value(q); 
-            const auto normal = phi_discharge_m.normal_vector(q);
-            const auto zb_m   = data_quadrature_face.get_data(face, 2*q);
-            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1);
-            // Computes the numerical pressure flux corresponding to
+            const auto z_m    = phi_height_m.get_value(q); // free-surface height on the minus side of the face at q-th quadrature point
+            const auto z_p    = phi_height_p.get_value(q); // free-surface height on the plus side of the face at q-th quadrature point
+            const auto normal = phi_discharge_m.normal_vector(q); // normal vector at the interface pointing from plus face to minus face
+            const auto zb_m   = data_quadrature_face.get_data(face, 2*q); // bathymetry on the minus side of the face at the q-th quadrature point (even index)
+            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1); // bathymetry on the plus side of the face at the q-th quadrature point (odd index)
+            // The function numerical_presflux_strong, computes the numerical pressure flux corresponding to
             // g * {{h*}} * {{phi_i}} · [[zeta*]], excluding the test-function
             // contribution, which is handled by submit_value().
             auto numerical_flux_m =
@@ -745,15 +745,16 @@ namespace SpaceDiscretization
                                                  z_p,
                                                  normal,
                                                  zb_m,
-                                                 zb_p);
+                                                 zb_p); // numerical pressure flux on the minus side of the face
             auto numerical_flux_p =
                num_flux.numerical_presflux_strong(z_p,
                                                  z_m,
                                                  normal,
                                                  zb_p,
-                                                 zb_m);
-
-            phi_discharge_m.submit_value(numerical_flux_m, q); 
+                                                 zb_m); // numerical pressure flux on the plus side of the face
+            // The numerical flux for the minus side is simply the negative of the plus side, since we are computing the jump across the face.
+            // Everything gets then submitted to the respective FEFaceEvaluation object of discharge for integration and scattering into the destination vector dst.
+            phi_discharge_m.submit_value(numerical_flux_m, q);
             phi_discharge_p.submit_value(numerical_flux_p, q);
           }
 
@@ -763,7 +764,29 @@ namespace SpaceDiscretization
   }
 
   // Similar argument applies to the boundary operators, which must be
-  // reimplemented as follows:
+  // reimplemented.
+
+
+  // CONTINUITY EQUATION - BOUNDARY FACE CONTRIBUTIONS
+  // Computes the boundary-face contribution of the discrete divergence
+  // operator B, accounting for the numerical mass flux across the
+  // external boundaries of the computational domain.
+  //
+  // Unlike interior faces, where the minus and plus states belong to
+  // two neighboring cells, only the interior (minus) state is directly
+  // available. The exterior (plus) state is reconstructed according
+  // to the prescribed boundary condition.
+  //
+  // The numerical mass flux is computed using the interior and
+  // reconstructed exterior states, together with the bathymetry.
+  //
+  // Mathematically, the boundary contribution corresponds to:
+  // - integral_boundaryK (flux · n) * psi_i dGamma,
+  // where psi_i is a scalar test function for the free surface.
+  //
+  // The resulting contributions are integrated and scattered into dst.
+  // When applied to the known intermediate discharge Q*, this operator
+  // contributes to the right-hand side F of the free-surface equation.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_boundary_face_height(
@@ -772,40 +795,49 @@ namespace SpaceDiscretization
     const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
     const std::pair<unsigned int, unsigned int>                   &face_range) const
   {
+    // We are at the boundary so only the interior face value is known, hence we evaluate it (true = interior face)
+    // The exterior (plus) state is obtained from the boundary condition.
     FEFaceEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data, face_range, true, 0);
     FEFaceEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data, face_range, true, 1);
 
     for (unsigned int face = face_range.first; face < face_range.second; ++face)
       {
         phi_height.reinit(face);
-        phi_height.gather_evaluate(src[0], EvaluationFlags::values);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values); // free-surface in the interior face (minus side)
         phi_discharge.reinit(face);
-        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values);
+        phi_discharge.gather_evaluate(src[1], EvaluationFlags::values); // discharge in the interior face (minus side)
 
         for (unsigned int q = 0; q < phi_height.n_q_points; ++q)
           {
-            const auto z_m    = phi_height.get_value(q);
-            const auto q_m    = phi_discharge.get_value(q);
-            const auto normal = phi_height.normal_vector(q);
-            const auto point  = phi_height.quadrature_point(q);
+            const auto z_m    = phi_height.get_value(q); // free-surface in the interior face (minus side) evaluated at q-th point of quad
+            const auto q_m    = phi_discharge.get_value(q); // discharge in the interior face (minus side) evaluated at q-th point of quad
+            const auto normal = phi_height.normal_vector(q); // normal vector at the interface pointing from plus face to minus face
+            const auto point  = phi_height.quadrature_point(q); // returns the q-th quadrature point on the face in real coordinates stored in MappingInfo
+            // Bathymetry at the boundary quadrature point; subtract n_inner_face_batches()
+            // to convert the global face-batch index into a boundary-local index.
             const auto zb_m   =
               data_quadrature_boundary.get_data(face-data.n_inner_face_batches(), q);
-
+            // declaring the values to be constructed in the "ghost" plus side of the face
             VectorizedArray<Number> z_p;
             Tensor<1, dim, VectorizedArray<Number>> q_p;
             bool at_outflow;
-
-            const auto boundary_id = data.get_boundary_id(face);
-
+            
+            const auto boundary_id = data.get_boundary_id(face); // get the corresponding boundary_id of the face, to decide the applied boundary cond
+            // Construct the exterior (plus) state from the prescribed boundary condition,
+            // using the interior state, outward normal, position, and bathymetry.
             Base::get_boundary_value(
               boundary_id, z_m, q_m, normal, point, zb_m, &z_p, q_p, &at_outflow);
-
+            // Compute velocities on both sides of the boundary face (interior and reconstructed exterior).
+            // Reconstruct the discharges using the common bathymetry zb_star = zb_m.
+            // Recall that the mass flux is F(q) = q = h * v.
             const auto v_m = model.velocity(z_m, q_m, zb_m);
             const auto v_p = model.velocity(z_p, q_p, zb_m);
             const auto zb_star = std::min(zb_m, zb_m);
             const auto flux_m = model.depth(z_m, zb_star) * v_m;
             const auto flux_p = model.depth(z_p, zb_star) * v_p;
-
+            // Compute the centered numerical mass flux projected onto the outward normal.
+            // The minus sign comes from the boundary term of the weak continuity equation,
+            // after moving the spatial contributions to the right-hand side.
             auto flux = 0.5 * (flux_m * normal + flux_p * normal);
 
             phi_height.submit_value(-flux, q);
@@ -815,6 +847,23 @@ namespace SpaceDiscretization
       }
   }
 
+  // MOMENTUM EQUATION - NON-STIFF BOUNDARY FACE CONTRIBUTIONS
+  // Computes the boundary-face contribution of the non-stiff operator G,
+  // associated with the numerical advective momentum flux.
+  //
+  // The free-surface elevation and discharge are evaluated on the interior
+  // (minus) side, while the exterior (plus) state is reconstructed using
+  // the prescribed boundary condition.
+  //
+  // The numerical advective flux is computed using the local
+  // Lax-Friedrichs (Rusanov) formulation with hydrostatic reconstruction.
+  //
+  // Mathematically, the boundary contribution corresponds to:
+  // - integral_boundaryK F_adv_num · varphi_i dGamma,
+  // where F_adv_num is the numerical advective flux projected onto
+  // the outward normal, and varphi_i is the vector-valued discharge test function.
+  //
+  // The resulting contributions are integrated and scattered into dst.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_boundary_face_nonstiff_discharge(
@@ -823,6 +872,8 @@ namespace SpaceDiscretization
     const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
     const std::pair<unsigned int, unsigned int>                   &face_range) const
   {
+    // Only the interior (minus) side is evaluated (true).
+    // The exterior (plus) state is obtained from the boundary condition.
     FEFaceEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data, face_range, true, 0);
     FEFaceEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data, face_range, true, 1);
 
@@ -847,22 +898,32 @@ namespace SpaceDiscretization
             bool at_outflow;
 
             const auto boundary_id = data.get_boundary_id(face);
-
+            // Construct the exterior (plus) state from the prescribed boundary condition,
+            // using the interior state, outward normal, position, and bathymetry.
             Base::get_boundary_value(
               boundary_id, z_m, q_m, normal, point, zb_m, &z_p, q_p, &at_outflow);
-
+            // Compute the numerical advective momentum flux using the interior
+            // and reconstructed exterior states, with the same bathymetry on both sides.
+            // (advective flux for the momentum eq + Rusanov stabilization)
             auto flux =
               num_flux.numerical_advflux_weak(z_m, z_p, q_m, q_p, normal, zb_m, zb_m);
 
+            // OUTFLOW BOUNDARY CORRECTION
+            // If the boundary is classified as outflow, suppress the numerical
+            // advective flux in SIMD lanes where the interior discharge points inward
+            // (q_m · n < -1e-12), preventing an incoming advective contribution.
             if (at_outflow)
               for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
                 {
-                  auto rho_u_dot_n = q_m * normal;
+                  auto rho_u_dot_n = q_m * normal; // computes the discharge along the outward normal
+                  // if the discharge along the outward normal is negative (< 0) then it means that it's going INSIDE the domain
+                  // so we nullify the flux
                   if (rho_u_dot_n[v] < -1e-12)
                     for (unsigned int d = 0; d < dim; ++d)
                       flux[d][v] = 0.;
                 }
-
+            // The minus sign comes from the boundary term of the weak continuity equation,
+            // after moving the spatial contributions to the right-hand side.
             phi_discharge.submit_value(-flux, q);
           }
 
@@ -870,6 +931,24 @@ namespace SpaceDiscretization
       }
   }
 
+  // MOMENTUM EQUATION - STIFF BOUNDARY FACE CONTRIBUTIONS
+  // Computes the boundary-face contribution of the stiff operator L,
+  // associated with the numerical pressure flux in the momentum equation.
+  //
+  // The free-surface elevation and discharge are evaluated on the interior
+  // (minus) side, while the exterior (plus) state is reconstructed using
+  // the prescribed boundary condition.
+  //
+  // The numerical pressure flux is computed using
+  // numerical_presflux_strong() and the boundary bathymetry.
+  //
+  // Mathematically, the boundary contribution corresponds to:
+  // - integral_boundaryK F_pres_num · varphi_i dGamma,
+  // where F_pres_num is the numerical pressure flux and
+  // varphi_i is the vector-valued discharge test function.
+  //
+  // Bottom friction is not included in this boundary contribution.
+  // The resulting contributions are integrated and scattered into dst.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_boundary_face_stiff_discharge(
@@ -878,6 +957,8 @@ namespace SpaceDiscretization
     const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
     const std::pair<unsigned int, unsigned int>                   &face_range) const
   {
+    // Only the interior (minus) side is evaluated (true).
+    // The exterior (plus) state is obtained from the boundary condition.
     FEFaceEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data, face_range, true, 0);
     FEFaceEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data, face_range, true, 1);
 
@@ -902,13 +983,19 @@ namespace SpaceDiscretization
             bool at_outflow;
 
             const auto boundary_id = data.get_boundary_id(face);
-
+            // Construct the exterior (plus) state from the prescribed boundary condition,
+            // using the interior state, outward normal, position, and bathymetry.
             Base::get_boundary_value(
               boundary_id, z_m, q_m, normal, point, zb_m, &z_p, q_p, &at_outflow);
-
+            // Compute the numerical pressure flux using the interior and
+            // reconstructed exterior free-surface elevations.
+            // The same boundary bathymetry is used on both sides.
             auto flux =
               num_flux.numerical_presflux_strong(z_m, z_p, normal, zb_m, zb_m);
-
+            // OUTFLOW BOUNDARY CORRECTION
+            // If the boundary is classified as outflow, suppress the numerical
+            // advective flux in SIMD lanes where the interior discharge points inward
+            // (q_m · n < -1e-12), preventing an incoming advective contribution.
             if (at_outflow)
               for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
                 {
@@ -917,7 +1004,8 @@ namespace SpaceDiscretization
                     for (unsigned int d = 0; d < dim; ++d)
                       flux[d][v] = 0.;
                 }
-
+            // Submit the negative numerical pressure flux, consistently with
+            // the boundary contribution of the stiff momentum equation.
             phi_discharge.submit_value(-flux, q);
           }
 
