@@ -20,6 +20,8 @@
 
 // The following files include the oceano libraries
 #include <space_discretization/OceanDG.h>
+#include <deal.II/lac/solver_gmres.h>
+#include <deal.II/lac/solver_control.h>
 
 /**
  * Namespace containing the spatial Operator
@@ -45,6 +47,8 @@ namespace SpaceDiscretization
   // the pressure gradient term and the bottom friction term in the momentum
   // equation.
   template <int dim, int n_tra, int degree, int n_points_1d>
+  // Class OceanoOperatorSemiImplicit inherits from the base class OceanoOperator, which is a template class that takes:
+  // the spatial dimension (dim), the number of tracers (n_tra), the polynomial degree (degree), and the number of quadrature points per spatial direction (n_points_1d) as template parameters.
   class OceanoOperatorSemiImplicit : public OceanoOperator<dim, n_tra, degree, n_points_1d>
   {
   public:
@@ -122,7 +126,23 @@ namespace SpaceDiscretization
       LinearAlgebra::distributed::Vector<Number>                    &dst,
       const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
       const std::pair<unsigned int, unsigned int>                   &cell_range) const;
+    
+    void local_apply_linearized_cell_mass_height(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const LinearAlgebra::distributed::Vector<Number>              &src,
+      const std::pair<unsigned int, unsigned int>                   &cell_range) const;
 
+    // vmult method to work with GMRES solver, which is used to solve the linear system arising from the semi-implicit time integration scheme.
+    void vmult(
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const LinearAlgebra::distributed::Vector<Number> &src) const;
+    
+    // Application of the mass matrix
+    void vmult_mass_matrix(
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const LinearAlgebra::distributed::Vector<Number> &src) const;
+    
     void
     perform_stage_hydro(
       const unsigned int                                             cur_stage,
@@ -166,6 +186,61 @@ namespace SpaceDiscretization
   {}
 
 
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::local_apply_linearized_cell_mass_height(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const LinearAlgebra::distributed::Vector<Number>              &src,
+    const std::pair<unsigned int, unsigned int>                   &cell_range) const
+  {
+    FEEvaluation<dim, -1, degree + 2, 1, Number> phi_height(data, cell_range, 0, 1);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        phi_height.reinit(cell);
+        phi_height.gather_evaluate(src, EvaluationFlags::values);
+
+        for (unsigned int q = 0; q < phi_height.n_q_points; ++q)
+          {
+            const auto z_q = phi_height.get_value(q);
+            const auto zb_q = data_quadrature_cell_1.get_data(cell, q);
+
+            phi_height.submit_value(
+              z_q, // we should have + zb_q, but we are linearizing around the bathymetry, so zb_q should go in the RHS
+              q);
+          }
+
+        phi_height.integrate_scatter(EvaluationFlags::values,
+                                       dst);
+      }
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  vmult(
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const LinearAlgebra::distributed::Vector<Number> &src
+  ) const
+  {
+    // We apply the mass matrix: dst = M * src, where M is the mass matrix associated with the free-surface height equation.
+    vmult_mass_matrix(dst, src);
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  vmult_mass_matrix(
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const LinearAlgebra::distributed::Vector<Number> &src
+  ) const
+  {
+    // solution_height.zero_out_ghost_values();
+    data.cell_loop(
+        &Base::local_apply_linearized_cell_mass_height,
+        static_cast<const Base *>(this),
+        dst,
+        src,
+        true);
+  }
 
   // For an implicit-explicit (IMEX) scheme, the right-hand side must be
   // partitioned into a stiff part and a non-stiff part. The stiff part
@@ -1028,9 +1103,23 @@ namespace SpaceDiscretization
     const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
     const std::pair<unsigned int, unsigned int>                   &cell_range) const
   {
+    // phi_discharge: discharge field to which A^(-1) is applied to compute Q* at stage l.
+    // phi_discharge_ri: reference discharge used to evaluate the coefficients of A^(-1).
+    // phi_height_ri: reference free-surface elevation used to evaluate the coefficients of A^(-1).
     FEEvaluation<dim, -1, degree + 1, dim, Number> phi_discharge(data, cell_range, 1, 2);
     FEEvaluation<dim, -1, degree + 1, 1, Number> phi_height_ri(data, cell_range, 0, 2);
     FEEvaluation<dim, -1, degree + 1, dim, Number> phi_discharge_ri(data, cell_range, 1, 2);
+    // INVERSE MODIFIED MASS MATRIX - DISCHARGE
+    // Define two operators to apply the inverse of the local mass matrix.
+    //
+    // inverse: standard deal.II operator, applying the full cellwise inverse
+    // mass matrix to the discharge DoFs.
+    //
+    // inverse_dry: OCEANO-specific lumped approximation, using only the
+    // diagonal entries for efficient SIMD operations on dry cells.
+    //
+    // Both operators are initialized with phi_discharge and will be used
+    // to apply A^(-1) in the semi-implicit momentum equation.
     MatrixFreeOperators::CellwiseInverseMassMatrix<dim, degree, dim, Number>
       inverse(phi_discharge);
     MatrixFreeOperatorsOceano::CellwiseInverseMassMatrixLumped<dim, 0, dim, Number>
@@ -1038,6 +1127,11 @@ namespace SpaceDiscretization
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
+        // read_dof_values() reads the coefficients q_j (DoFs) directly.
+        // gather_evaluate() reconstructs the field at quadrature points:
+        // q_h(x_q) = sum_j q_j * phi_j(x_q).
+        // Here, src[0] provides the DoFs for A^(-1), while src[1] and src[2]
+        // provide the reference fields needed to evaluate its coefficients.
         phi_discharge.reinit(cell);
         phi_discharge.read_dof_values(src[0]);
 
@@ -1045,38 +1139,102 @@ namespace SpaceDiscretization
         phi_height_ri.gather_evaluate(src[1], EvaluationFlags::values);
         phi_discharge_ri.reinit(cell);
         phi_discharge_ri.gather_evaluate(src[2], EvaluationFlags::values);
-
+        // Select the inverse mass-matrix method based on the active FE index.
+        // Index 1: standard polynomial degree, using the full cellwise inverse.
+        // Index 0: degree-zero element, typically used for dry cells in the hp strategy,
+        //          using the lumped inverse mass matrix (exact for degree zero).
+        // Note: FE index 0 identifies the polynomial degree, not necessarily a dry cell.
         if (phi_discharge.get_active_fe_index())
           {
+            // deal.II performs FE computations on a reference cell rather than directly
+            // on each physical cell, allowing the same basis functions and quadrature
+            // rules to be reused for cells with different geometries.
+            //
+            // The geometric Jacobian J maps the reference cell to the physical cell,
+            // and |det(J)| accounts for the change in volume during integration.
+            //
+            // The inverse JxW = 1 / (|det(J)| * w_q), where w_q is the quadrature weight,
+            // is used to apply the local inverse mass matrix.
             AlignedVector<VectorizedArray<Number>> inverse_jxw(phi_discharge.n_q_points);
 	    inverse.fill_inverse_JxW_values(inverse_jxw);
 
             for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
               {
-                const auto z_q = phi_height_ri.get_value(q);
-                const auto q_q = phi_discharge_ri.get_value(q);
-                const auto zb_q = data_quadrature_cell_2.get_data(cell, q)[0];
-                const auto cf_q = data_quadrature_cell_2.get_data(cell, q)[1];
+                const auto z_q = phi_height_ri.get_value(q); // Reference free-surface elevation zeta, used to compute the reference water depth h.
+                const auto q_q = phi_discharge_ri.get_value(q); // Reference discharge q, used to compute the reference velocity.
+                const auto zb_q = data_quadrature_cell_2.get_data(cell, q)[0]; // Bathymetry at the q-th quadrature point.
+                const auto cf_q = data_quadrature_cell_2.get_data(cell, q)[1]; // Bottom-friction (drag) coefficient at the q-th quadrature point.
+                // Modify the inverse JxW coefficients by the reciprocal of the
+                // friction-dependent factor defining A, evaluated at the reference state.
+                // These modified coefficients are then used to apply A^(-1).
 
+                // Compute the analytically defined Jacobian of the bottom-friction term,
+                // evaluated at the reference velocity v = q/h and water depth h.
+                // velocity() reconstructs v from zeta, q, and bathymetry,
+                // while depth() computes h = zeta + zb (with a minimum depth threshold).
+                
+                // Modify inverse_jxw by the reciprocal of the coefficient defining A^(l):
+                // 1 / (1 + a_tilde_ll * dt * gamma(q_ref, h_ref)).
+                //
+                // Here, factor_matrix = a_tilde_ll * dt, while bottom_friction.jacobian()
+                // evaluates gamma at the reference state.
+                //
+                // The resulting coefficient is:
+                // inverse_jxw[q] = 1 / (JxW_q * (1 + a_tilde_ll * dt * gamma)).
+                //
+                // These coefficients are then used by inverse.apply() to apply A^(-1).
                 inverse_jxw[q] *= 1. / ( 1. + factor_matrix
                   * model.bottom_friction.jacobian(model.velocity(z_q, q_q, zb_q),
                                                    cf_q,
                                                    model.depth(z_q, zb_q))
                                        );
               }
+            // The basis functions do not appear explicitly because the standard
+            // deal.II CellwiseInverseMassMatrix uses the FE shape information
+            // stored in phi_discharge to apply the inverse mass matrix.
+            // It internally accounts for the products phi_i * phi_j, while
+            // inverse_jxw provides the inverse geometric and friction coefficients.  
 
+            // Now we apply the local inverse of the modified mass matrix A^(l) to the discharge DoFs.
+            //
+            // inverse: deal.II CellwiseInverseMassMatrix object, initialized with
+            //          phi_discharge to perform the local matrix inversion.
+            //
+            // inverse_jxw: contains 1 / (JxW_q * (1 + factor_matrix * gamma_q)),
+            //              accounting for cell geometry and bottom friction.
+            //
+            // dim: number of discharge components.
+            //
+            // phi_discharge.begin_dof_values(): pointer to the local discharge
+            //          coefficients q_j, previously loaded using read_dof_values().
+            //
+            // The first pointer provides the input DoFs, while the second stores
+            // the result A^(-1) * src[0] in the same array (in-place operation).
+            //
+            // This branch uses the standard inverse mass matrix, not the lumped
+            // approximation used for degree-zero cells.
             inverse.apply(inverse_jxw, dim, phi_discharge.begin_dof_values(),
               phi_discharge.begin_dof_values());
           }
-        else
+        else // Index 0: degree-zero element, typically used for dry cells in the hp strategy,
+             // using the lumped inverse mass matrix (exact for degree zero).
           {
             for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
               {
+                // Same as the non lumped case, we get the values of zeta, discharge, bathymetry and friction coeff
                 const auto z_q = phi_height_ri.get_value(q);
                 const auto q_q = phi_discharge_ri.get_value(q);
                 const auto zb_q = data_quadrature_cell_2.get_data(cell, q)[0];
                 const auto cf_q = data_quadrature_cell_2.get_data(cell, q)[1];
 
+                // For the degree-zero element, assemble the single entry of the
+                // modified mass matrix A_00 = integral_K (1 + alpha * gamma) dOmega.
+                //
+                // submit_value() and integrate() compute the integral against the
+                // height basis function psi_0 = 1. Since phi_0 * phi_0 = 1,
+                // this gives the exact 1x1 mass matrix, without assembling a full matrix.
+                //
+                // The lumped inverse is therefore exact for this degree-zero element.
                 phi_height_ri.submit_value(1. + factor_matrix
                     * model.bottom_friction.jacobian(model.velocity(z_q, q_q, zb_q),
                                                      cf_q,
@@ -1084,13 +1242,20 @@ namespace SpaceDiscretization
                                               q);
               }
             phi_height_ri.integrate(EvaluationFlags::values);
-
+            // We create an array of dimension 1, since we have only one DoF for each cell, i.e. the matrix is 1x1
             AlignedVector<VectorizedArray<Number>> cell_matrix(1);
+            // Extract the DoF value from phi_height_ri, recall that the DoF of phi_height_ri now is:
+            // A_00 = integral_K (1 + alpha * gamma) dOmega
             cell_matrix[0] = phi_height_ri.get_dof_value(0);
+            // Apply the lumped inverse of the degree-zero modified mass matrix A.
+            // The single coefficient A_00 is provided by cell_matrix[0].
+            // Each discharge DoF is divided by A_00, directly in SIMD format.
+            // The same DoF array is used for input and output (in-place operation). 
             inverse_dry.apply(&cell_matrix[0], phi_discharge.begin_dof_values(),
               phi_discharge.begin_dof_values());
           }
-
+        // Now we write in the global dsetination vector (dst) the local DoF vaalues of the discharge
+        // containing the results of the application of the inverse A^(-1)
         phi_discharge.set_dof_values(dst);
       }
   }
@@ -1110,20 +1275,24 @@ namespace SpaceDiscretization
   // of the discharge.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::perform_stage_hydro(
-    const unsigned int                                             current_stage,
-    const Number                                                   current_time,
-    const Number                                                  *factor_residual,
-    const Number                                                  *factor_tilde_residual,
-    const std::vector<LinearAlgebra::distributed::Vector<Number>> &current_ri,
-    std::vector<LinearAlgebra::distributed::Vector<Number>>       &vec_ki_height,
-    std::vector<LinearAlgebra::distributed::Vector<Number>>       &vec_ki_discharge,
-    LinearAlgebra::distributed::Vector<Number>                    &solution_height,
-    LinearAlgebra::distributed::Vector<Number>                    &solution_discharge,
-    LinearAlgebra::distributed::Vector<Number>                    &next_ri_height,
-    LinearAlgebra::distributed::Vector<Number>                    &next_ri_discharge) const
+    const unsigned int                                             current_stage, // Index of the current IMEX RK stage (l)
+    const Number                                                   current_time, // Physical time associated with the current stage
+    const Number                                                  *factor_residual, // Explicit RK coefficients for combining non-stiff residuals (a,b,c)
+    const Number                                                  *factor_tilde_residual, // Implicit RK coefficients for combining stiff residuals (a-tilde,b-tilde,c-tilde)
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &current_ri, // Know hydrodynamic state (zeta and discharge) used as input
+    std::vector<LinearAlgebra::distributed::Vector<Number>>       &vec_ki_height, // Stage residual vectors for the free-surface equation. (later combined with b/b-tilde coefficients)
+    std::vector<LinearAlgebra::distributed::Vector<Number>>       &vec_ki_discharge, // Stage residual vectors for the discharge equation. (later combined with b/b-tilde coefficients)
+    LinearAlgebra::distributed::Vector<Number>                    &solution_height, // Free-surface solution vector.
+    LinearAlgebra::distributed::Vector<Number>                    &solution_discharge, // Discharge solution vector.
+    LinearAlgebra::distributed::Vector<Number>                    &next_ri_height, // Output free-surface state for the current stage.
+                                                                  // Output discharge state for the current stage.
+    LinearAlgebra::distributed::Vector<Number>                    &next_ri_discharge ) const // const here indicates that the method cannot change members of the object
+                                                                                             // aside from those passed as reference (&)
   {
-
-    const unsigned int n_stages = vec_ki_height.size()-1;
+    // vec_ki is a vector of distributed vectors, so vec_ki_height.size is referring to the number of vectors contained
+    const unsigned int n_stages = vec_ki_height.size()-1; // -1 because the code consider one stage more
+    // Check whether the current RK stage requires an implicit solve,
+    // i.e., whether the diagonal implicit coefficient dt * a_tilde_ll is nonzero.
     const bool is_last_stage_implicit = factor_matrix > 0.;
 
     {
@@ -1135,8 +1304,17 @@ namespace SpaceDiscretization
       // implicit residuals are evaluated with the same weights, so we can store
       // a single residual and save some memory. This explains the different
       // code path for a time integrator whose last stage is explicit.
-      TimerOutput::Scope t(timer, "rk_stage hydro - integrals L_h");
 
+      // Compute the DG residuals F, G and L required by the IMEX RK scheme.
+      // These contributions are stored for the RK stage combinations,
+      // while the operators B, E and D are handled in the implicit solve.
+      TimerOutput::Scope t(timer, "rk_stage hydro - integrals L_h"); // Start a timer to measure the execution time of this scope.
+
+      // Update all time-dependent boundary conditions to the current RK stage time.
+      // 'auto' automatically deduces the type of each map element 'i', where
+      // 'i.second' is a pointer to the boundary condition object.
+      // The '->' operator accesses the set_time() method through this pointer.
+      // This updates the evaluation time without applying the boundary conditions yet.
       for (auto &i : bc->supercritical_inflow_boundaries)
         i.second->set_time(current_time);
       for (auto &i : bc->height_inflow_boundaries)
@@ -1147,55 +1325,119 @@ namespace SpaceDiscretization
         i.second->set_time(current_time);
       bc->problem_data->set_time(current_time);
 
-      data.loop(&Base::local_apply_cell_height,
-                &Base::local_apply_face_height,
-                &Base::local_apply_boundary_face_height,
-                static_cast<const Base *>(this),
-                vec_ki_height[current_stage+1],
-                current_ri,
-                true,
-                MatrixFree<dim, Number>::DataAccessOnFaces::values,
-                MatrixFree<dim, Number>::DataAccessOnFaces::values);
+      /*
+      *
+      * 'data' is a MatrixFree<dim, Number> object declared as a protected
+      * member of OceanoOperator in OceanDG.h and inherited by this class
+      * through 'using Base::data'.
+      *
+      * MatrixFree::loop() executes the specified local operators over
+      * all cells, interior faces and boundary faces, assembling their
+      * contributions into the destination vector.
+      * 
+      * MatrixFree::cell_loop() executes only cell-volume operators,
+      * without evaluating interior-face or boundary-face contributions.
+      * It can also use additional callbacks (lambda functions) to
+      * perform vector operations, such as combining RK residuals.
+      * 
+      * We explicitly use Base::local_apply_* from OceanDG.h to evaluate some
+      * the operators(rather than the corresponding methods defined
+      * in OceanoOperatorSemiImplicit).
+      */
 
+      // 'data' manages the matrix-free DG computations but does not store the residual.
+      // The computed cell, interior-face and boundary-face contributions are accumulated
+      // in vec_ki_height[current_stage + 1], while current_ri remains the input state.
+
+      // Compute the DG residual F for the free-surface equation.
+      data.loop(&Base::local_apply_cell_height, // Volume contributions of F
+                &Base::local_apply_face_height, // Interior-face contributions of F
+                &Base::local_apply_boundary_face_height, // Boundary-face contributions of F
+                static_cast<const Base *>(this), // Cast the current (this) object to its Base type
+                                                 // possible since OceanoOperatorSemiImplicit derives from Base.
+                vec_ki_height[current_stage+1], // Destination: DG residual of the current RK stage.
+                current_ri, // Source: intermediate RK state (zeta and discharge).
+                true, // Initialize the destination vector to zero before accumulating contributions
+                      // Recall that vec_ki is a std::vector of distributed vectors, and only the vector with index
+                      // [current_stage+1] get set to zero for initialization
+                MatrixFree<dim, Number>::DataAccessOnFaces::values, // Required face data access for the source vector (current_ri).
+                MatrixFree<dim, Number>::DataAccessOnFaces::values); // Required face data access for the destination vector (vec_ki_height).
+
+
+      // 'current_stage' corresponds to the theoretical RK stage l (with zero-based indexing),
+      // while m denotes the previous stages (m < l), whose contributions are already known.
+      // Check whether we are at the final RK stage and whether it has no implicit
+      // diagonal contribution (factor_matrix = dt * a_tilde_ll = 0).
       if (current_stage == n_stages-1 && !is_last_stage_implicit)
         {
+          // Compute the DG residual G (non-stiff discharge operator) in the case of FULLY-EXPLICIT (even the friction)
+          // Store G^(l) at index 2*current_stage+1.
+          // Each RK stage uses two slots: one for G (non-stiff) and one for L (stiff).
+          // Index 0 is reserved as a temporary vector for RHS assembly.
+          // Here we expect only the use of non-stiff operators since we are in explicit RK
           data.loop(
-                &Base::local_apply_cell_discharge,
-                &Base::local_apply_face_discharge,
-                &Base::local_apply_boundary_face_discharge,
-                static_cast<const Base *>(this),
-                vec_ki_discharge[2*current_stage+1],
-                current_ri,
-                true,
+                &Base::local_apply_cell_discharge, // Volume cotnributions of G
+                &Base::local_apply_face_discharge, // Interior-face contributions of G
+                &Base::local_apply_boundary_face_discharge, // Boundary-face contributions of G
+                static_cast<const Base *>(this), // Cast the current (this) object to its Base type
+                                                 // possible since OceanoOperatorSemiImplicit derives from Base.
+                vec_ki_discharge[2*current_stage+1], // Destination: STIFF-DG residual of the current RK stage in odd indexes
+                current_ri, // Source: intermediate RK state (zeta and discharge).
+                true, // Initialize the destination vector to zero before accumulating contributions
                 MatrixFree<dim, Number>::DataAccessOnFaces::values,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values);
         }
-      else
+      else // We are either NOT at the last stage OR the last stage is implicit (not exclusive or) 
         {
+          /*
+          * Compute the non-stiff discharge residual G using the operators
+          * defined in OceanoOperatorSemiImplicit.
+          * Unlike the Base implementation, these exclude the stiff contributions
+          * (pressure and friction), which are handled separately by L.
+          */
           data.loop(
-                &OceanoOperatorSemiImplicit::local_apply_cell_nonstiff_discharge, // contributo non stiff, sarebbe la parte di cella di G (celle = guarda gli elementi K)
-                &OceanoOperatorSemiImplicit::local_apply_face_nonstiff_discharge, // contributo non stiff delle faces quindi loop su gamma
-                &OceanoOperatorSemiImplicit::local_apply_boundary_face_nonstiff_discharge,
-                this,
-                vec_ki_discharge[2*current_stage+1], // vettori registri
-                current_ri, // runge kutta stage attuale
-                true,
+                &OceanoOperatorSemiImplicit::local_apply_cell_nonstiff_discharge, // Volume cotnributions of G
+                &OceanoOperatorSemiImplicit::local_apply_face_nonstiff_discharge, // Interior-face contributions of G
+                &OceanoOperatorSemiImplicit::local_apply_boundary_face_nonstiff_discharge, // Boundary-face contributions of G
+                this, // This object, doesn't need upcasting since it's for the class SemiImplicit
+                vec_ki_discharge[2*current_stage+1], // Destination: NON-STIFF-DG residual of the current RK stage in odd indexes
+                current_ri, // Source: intermediate RK state (zeta and discharge).
+                true, // Initialize the destination vector to zero before accumulating contributions
                 MatrixFree<dim, Number>::DataAccessOnFaces::values,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values);
+          /*
+          * Compute the stiff discharge residual L using the operators
+          * defined in OceanoOperatorSemiImplicit.
+          * These include the pressure and friction contributions, treated
+          * implicitly in the IMEX Runge-Kutta scheme.
+          */      
           data.loop(
-                &OceanoOperatorSemiImplicit::local_apply_cell_stiff_discharge,
-                &OceanoOperatorSemiImplicit::local_apply_face_stiff_discharge,
-                &OceanoOperatorSemiImplicit::local_apply_boundary_face_stiff_discharge,
-                this,
-                vec_ki_discharge[2*current_stage+2],
-                current_ri,
-                true,
+                &OceanoOperatorSemiImplicit::local_apply_cell_stiff_discharge, // Volume contributions of L
+                &OceanoOperatorSemiImplicit::local_apply_face_stiff_discharge, // Interior-face contributions of L
+                &OceanoOperatorSemiImplicit::local_apply_boundary_face_stiff_discharge, // Boundary-face contributions of L
+                this, // This object, doesn't need upcasting since it's for the class SemiImplicit
+                vec_ki_discharge[2*current_stage+2], // Destination: STIFF-DG residual of the current RK stage in even indexes
+                current_ri, // Source: intermediate RK state (zeta and discharge).
+                true, // Initialize the destination vector to zero before accumulating contributions
                 MatrixFree<dim, Number>::DataAccessOnFaces::values,
                 MatrixFree<dim, Number>::DataAccessOnFaces::values);
         }
     }
 
 
+    /*
+    * Assemble and combine the previously computed DG residuals using
+    * the IMEX Runge-Kutta coefficients, then update the stage solutions.
+    *
+    * For implicit stages, the procedure follows equations (17a)-(17c):
+    * 1. Compute the intermediate discharge Q* by applying A^(-1).
+    * 2. Assemble and solve the free-surface equation for zeta
+    *    (the Schur complement solve is still to be implemented).
+    * 3. Correct Q* using the pressure contribution to obtain Q.
+    *
+    * For a final explicit stage, update the solution directly using
+    * the accumulated residuals and the inverse mass matrices.
+    */
     {
       TimerOutput::Scope t(timer, "rk_stage hydro - inv mass + vec upd");
       if (current_stage == n_stages-1 && !is_last_stage_implicit)
@@ -1274,20 +1516,68 @@ namespace SpaceDiscretization
           // discharge, denoted as "star" discharge, by inverting the mass matrix
           //  and stores it into the `next_ri` vector.
 
-          // Primo step del calcolo di Q* noto traamite la risoluzione di A Q* invertendola
+          /*
+          * First step of Eq. (17a): assemble the RHS for the intermediate discharge Q*.
+          * Combine the previously computed non-stiff (G) and stiff (L) DG residuals,
+          * weighted by the corresponding IMEX RK coefficients, and add the mass
+          * contribution M*Q^n through Base::local_apply_cell_mass_discharge.
+          *
+          * In the paper, M*Q^n is denoted by Q_tilde^n.
+          *
+          * The resulting RHS is stored in vec_ki_discharge.front() and will be
+          * used in the next cell_loop to compute Q* by applying A^(-1).
+          */
+
+          // The last three arguments of data.cell_loop() are:
+          // 1. operation_before_loop: lambda executed before the cell operator,
+          //    initializing dst with the weighted RK residuals G and L.
+          // 2. operation_after_loop: optional callback executed after the cell operator;
+          //    here an empty std::function, so no additional operation is performed.
+          // 3. dof_handler_index_pre_post: index of the DoFHandler used by the callbacks;
+          //    here 1, corresponding to the discharge field.
+          //
+          // The cell operator adds M * Q^n to the RHS initialized by the first lambda,
+          // through integrate_scatter(), completing Eq. (17a).
           data.cell_loop(
-            &Base::local_apply_cell_mass_discharge,
-            static_cast<const Base *>(this),
-            vec_ki_discharge.front(),
-            solution_discharge,
-            [&](const unsigned int start_range, const unsigned int end_range) {
+            &Base::local_apply_cell_mass_discharge, // mass matrix applied to discharge
+            static_cast<const Base *>(this), // Cast the current (this) object to its Base type
+                                             // possible since OceanoOperatorSemiImplicit derives from Base.
+            vec_ki_discharge.front(), // Destination: temporary vector storing the assembled RHS of Eq. (17a).
+                                      // .front() access to the first index of the vector i.e. [0]
+            solution_discharge, // Source: discharge solution Q^n, used to compute M * Q^n = Q_tilde^n.
+            // Now we define Lambda function specifying the operations to be executed by data.cell_loop().
+            // In this case, it combines the previously computed G (non-stiff) and L (stiff)
+            // residuals using the corresponding IMEX RK coefficients.
+            // The capture [&] allows access by reference to external variables used
+            // inside the lambda, such as vec_ki_discharge, factor_residual,
+            // factor_tilde_residual and current_stage.
+            // start_range and end_range are provided by cell_loop() and define
+            // the range of local vector entries to process.
+            [&](const unsigned int start_range, const unsigned int end_range) { // start/end_range are both given by data.loop
               /* DEAL_II_OPENMP_SIMD_PRAGMA */
-              for (unsigned int i = start_range; i < end_range; ++i)
+
+              // start_range and end_range define the range of local DoF indices
+              // to be processed, provided automatically by data.cell_loop().
+              // The loop iterates over vector entries, not cells or SIMD lanes.
+              for (unsigned int i = start_range; i < end_range; ++i) // cycle on the local DoF
                 {
-                  Number kex_i           = vec_ki_discharge[1].local_element(i);
-                  Number kim_i           = vec_ki_discharge[2].local_element(i);
+                  // Now we compute the explicit and implicit contributions for the i-th DoF
+                  // Recall that vec_ki_discharge is a std::vector of distributed vectors,
+                  // storing the stiff (L) and non-stiff (G) residuals of the RK stages.
+                  // local_element(i) accesses the scalar value associated with the i-th
+                  // locally owned DoF of the selected distributed vector.
+                  Number kex_i           = vec_ki_discharge[1].local_element(i); // Non-stiff residual G of the first RK stage, at local DoF i.
+                  Number kim_i           = vec_ki_discharge[2].local_element(i); // Stiff residual L of the first RK stage, at local DoF i.
+                  
+                  // Initialize the temporary RHS vector (front() = index 0) with the weighted
+                  // sum of the first-stage explicit and implicit residuals at DoF i.
+                  // Subsequent RK stage contributions will be accumulated using +=.
                   vec_ki_discharge.front().local_element(i)  = factor_residual[0]       * kex_i
                                                              + factor_tilde_residual[0] * kim_i;
+                  // Loop over the RK stages up to the current one, retrieving the
+                  // corresponding non-stiff (G) and stiff (L) residuals at local DoF i.
+                  // Accumulate their weighted contributions into vec_ki_discharge.front()
+                  // using +=, preserving the contributions from previous stages.                                          
                   for (unsigned int j = 1; j < current_stage+1; ++j)
 		    {
 		      kex_i              = vec_ki_discharge[2*j+1].local_element(i);
@@ -1297,18 +1587,24 @@ namespace SpaceDiscretization
 		    }
                 }
 	    },
-            std::function<void(const unsigned int, const unsigned int)>(),
-            1);
+            std::function<void(const unsigned int, const unsigned int)>(), // No additional vector-update callback (void second Lambda function)
+            1); // DoFHandler index for the callbacks: 1 corresponds to the discharge field.
+            // Finished arguments of the first data.cell_loop
 
+
+          // Second step of Eq. (17a): compute the intermediate discharge Q*
+          // by applying the inverse of the friction-modified mass matrix A
+          // to the previously assembled RHS.
+          // Since A is block-diagonal across DG cells, its inverse can be
+          // applied locally without solving a global linear system.
+          // The degree-zero case uses an exact lumped inverse.
           data.cell_loop(
-          // Inverto A che è diagonle quindi esy
-            &OceanoOperatorSemiImplicit::local_apply_inverse_modified_mass_matrix_discharge,
+            &OceanoOperatorSemiImplicit::local_apply_inverse_modified_mass_matrix_discharge, // inversion of the mass matrix + friction term
             this,
-            next_ri_discharge, // Q*
-            {vec_ki_discharge.front(), current_ri[0], current_ri[1]},
-            true); // qui gli sto dando gli input della funz
+            next_ri_discharge, // Destination: intermediate discharge Q* of Eq. (17a).
+            {vec_ki_discharge.front(), current_ri[0], current_ri[1]}, // RHS (that we just computed), reference zeta and discharge for friction.
+            true); // Clear the destination before applying A^(-1).
 
-	  // Secondo step, calcolo direttmente F(l) rispetto a scrivere tutto come B Q
           // The second step consists of updating the free surface. A cell/face
           // loop computes the mass flux term related to the "star" discharge.
           // To do this, specific `local_apply` operators are created for the
@@ -1319,37 +1615,55 @@ namespace SpaceDiscretization
           // operator, as in step 1.
           //
           // The mass matrix inversion is left to Mattia's master thesis.
-          data.loop(&OceanoOperatorSemiImplicit::local_apply_cell_height,
-                    &OceanoOperatorSemiImplicit::local_apply_face_height,
-                    &OceanoOperatorSemiImplicit::local_apply_boundary_face_height,
-                    this,
-                    vec_ki_height.front(), // metto RHS del nostro sisterma
-                    {current_ri[0], next_ri_discharge},
-                    true,
+
+          // Assemble the RHS of Eq. (17b) for the free-surface elevation.
+          // First, data.loop() computes the mass-flux contribution B*Q* using
+          // the intermediate discharge Q* and the reference free surface zeta
+          // (also needed to evaluate the numerical fluxes at cell faces).
+          data.loop(&OceanoOperatorSemiImplicit::local_apply_cell_height, // Local operator defining the cell-volume contribution. (B contribution)
+                    &OceanoOperatorSemiImplicit::local_apply_face_height, // Local operator defining the interior-face contribution.
+                    &OceanoOperatorSemiImplicit::local_apply_boundary_face_height, // Local operator defining the boundary-face contribution.
+                    this, // Pointer to the current semi-implicit operator.
+                    vec_ki_height.front(), // Destination: temporary vector storing B*Q* (index 0).
+                    {current_ri[0], next_ri_discharge}, // Source: reference zeta (zeta(l)) and intermediate discharge Q*.
+                    true, // Clear dst before assembling the mass-flux contribution.
                     MatrixFree<dim, Number>::DataAccessOnFaces::values,
                     MatrixFree<dim, Number>::DataAccessOnFaces::values);
-
+          // Then, data.cell_loop() combines this contribution (kf_i) with the
+          // previously computed RK residuals F (k_i), weighted by the corresponding
+          // IMEX coefficients. The lambda assembles these terms in
+          // vec_ki_height.front(), while the cell operator adds M*zeta^n.
           data.cell_loop(
-            &Base::local_apply_cell_mass_height,
-            static_cast<const Base *>(this),
-            vec_ki_height.front(),
-            solution_height,
+            &Base::local_apply_cell_mass_height, // Apply the standard height mass matrix M.
+            static_cast<const Base *>(this), // Use the Base class implementation.
+            vec_ki_height.front(), // Destination: RHS of Eq. (17b).
+            solution_height, // Source: zeta^n, used to compute M*zeta^n.
+
+            // Before-loop callback: combine B*Q* and the stored RK residuals F.
             [&](const unsigned int start_range, const unsigned int end_range) {
               /* DEAL_II_OPENMP_SIMD_PRAGMA */
               for (unsigned int i = start_range; i < end_range; ++i)
                 {
-                  Number kf_i         = vec_ki_height.front().local_element(i);
-                  Number k_i          = vec_ki_height[1].local_element(i);
+                  // Extract the mass-flux contribution and first-stage residual at local DoF i.
+                  Number kf_i         = vec_ki_height.front().local_element(i); // Extracting (B*Q*)_i.
+                  Number k_i          = vec_ki_height[1].local_element(i); // First stored F residual.
+                  // Initialize the RHS contribution with the weighted B*Q*
+                  // and first-stage F residual.
+                  // factor_matrix = dt * a_tilde_ll, where a_tilde_ll is the diagonal
+                  // coefficient of the implicit Butcher tableau for the current RK stage.
+                  // It weights the implicit contribution B*Q* in Eq. (17b) and is also
+                  // used to construct the friction-modified mass matrix A in Eq. (17a).
                   vec_ki_height.front().local_element(i)  = factor_matrix * kf_i + factor_tilde_residual[0]  * k_i;
+                  // Accumulate the F residuals from the remaining RK stages.
                   for (unsigned int j = 1; j < current_stage+1; ++j)
 		    {
-		      k_i              = vec_ki_height[j+1].local_element(i);
-		      vec_ki_height.front().local_element(i) += factor_tilde_residual[j]  * k_i;
+		      k_i              = vec_ki_height[j+1].local_element(i); // F residual of stage j+1
+		      vec_ki_height.front().local_element(i) += factor_tilde_residual[j]  * k_i;  // Add weighted contribution
 		    }
                 }
 	    },
-            std::function<void(const unsigned int, const unsigned int)>(),
-            0);
+            std::function<void(const unsigned int, const unsigned int)>(), // No after-loop callback.
+            0); // DoFHandler index for the callbacks: 0 corresponds to the height field.
 
           // The mass matrix inversion is left to Mattia master thesis. It should go here
           // with output vector the `solution` vector for last stage and `next_ri` vector

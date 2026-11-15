@@ -742,6 +742,23 @@ namespace SpaceDiscretization
       }
   }
 
+  // MOMENTUM EQUATION - MASS MATRIX CONTRIBUTION
+  // Computes the cell-volume contribution of the standard discharge
+  // mass matrix M, applied to the input discharge q.
+  //
+  // The discharge q is reconstructed from its DoF coefficients
+  // and evaluated at quadrature points.
+  //
+  // Mathematically, the volume contribution corresponds to:
+  // integral_K q_h · varphi_i dOmega
+  // = sum_j q_j integral_K varphi_j · varphi_i dOmega,
+  // where varphi_i and varphi_j are vector-valued basis functions
+  // for the discharge.
+  //
+  // In Eq. (17a), M * Q^n corresponds to Q_tilde^n.
+  //
+  // The resulting contributions are integrated and scattered into dst,
+  // without explicitly assembling the mass matrix M.
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperator<dim, n_tra, degree, n_points_1d>::local_apply_cell_mass_discharge(
     const MatrixFree<dim, Number> &,

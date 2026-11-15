@@ -32,6 +32,8 @@
  *
 */
 
+// Here we construct two operators classes, then we construct the methods "apply"
+// for each one and that method is the local applycation of the inverse matrix to the input vector
 namespace MatrixFreeOperatorsOceano
 {
 
@@ -123,7 +125,17 @@ namespace MatrixFreeOperatorsOceano
   {}
 
 
-
+  // CELLWISE INVERSE MASS MATRIX - FULL MATRIX
+  // Applies the inverse of the local DG mass matrix on each cell.
+  //
+  // The full local mass matrix is explicitly constructed and inverted
+  // using Gauss-Jordan elimination, then applied to each component
+  // of the input vector.
+  //
+  // Unlike the standard deal.II implementation, this version supports
+  // general quadrature rules and handles fully dry cells by setting
+  // the output to zero.
+  // By working locally, the important parts are the DoFs per cell.
   template <int dim,
             int fe_degree,
             int n_components,
@@ -136,45 +148,59 @@ namespace MatrixFreeOperatorsOceano
     n_components,
     Number,
     VectorizedArrayType>::
-      apply(const VectorizedArrayType *mass_array,
-            const VectorizedArrayType *in_array,
-            VectorizedArrayType       *out_array,
-            const unsigned int         cell_in_lane,
-            const VectorizedArrayType  mask) const
+      apply(const VectorizedArrayType *mass_array, // Local mass-matrix entries stored in SIMD format (vector)
+            const VectorizedArrayType *in_array, // Input vector to which the inverse mass matrix is applied.
+            VectorizedArrayType       *out_array, // Output vector containing the result of the inversion.
+            const unsigned int         cell_in_lane, // Index of the cell within the SIMD batch.
+            const VectorizedArrayType  mask) const // Mask used to identify active/non-dry cells.
   {
+    // If fe_degree >= 0, then given_degree = fe_degree. Else we get the degree from the object fe_eval
     const unsigned int given_degree =
         (fe_degree > -1) ? fe_degree :
                            fe_eval.get_shape_info().data.front().fe_degree;
-
+    // Compute the degree of freedom per component, assuming tensorial elements we have:
+    // DoF = (1+p)^dim
     const unsigned int dofs_per_component =
         Utilities::pow(given_degree + 1, dim);
-
+    // Read the total number of quadrature points in fe_eval
     const unsigned int n_q_points =
         fe_eval.get_shape_info().n_q_points;
 
+    // The inversion uses scalar FullMatrix and Vector objects,
+    // so each cell is extracted from the SIMD arrays and processed separately.
+    // The computed result is then stored back into the corresponding SIMD lane.
+
+    // Allocate the local mass matrix and input/output vectors.
+    // Their size is determined by the number of scalar DoFs per cell.
     FullMatrix<Number> cell_matrix(dofs_per_component, dofs_per_component);
     Vector<Number> cell_src(dofs_per_component),
                    cell_dst(dofs_per_component);
-
+    // Apply the inverse only to unmasked cells.
+    // Set the output to zero for fully dry (masked) cells.
     if (mask[cell_in_lane] < n_q_points)
       {
         for (unsigned int j=0; j<dofs_per_component; ++j)
           for (unsigned int i=0; i<dofs_per_component; ++i)
+            // the local mass matrix is stored as a vector, and here it gets copied into a matrix
+            // Extract the (i,j) mass-matrix entry for the current SIMD lane.
             cell_matrix(i,j) = mass_array[i + j * dofs_per_component][cell_in_lane];
-
+        // Extract the mass matrix for the current SIMD lane
+        // and invert it using Gauss-Jordan elimination.
         cell_matrix.gauss_jordan();
-        for (unsigned int d = 0; d < n_components; ++d)
+        for (unsigned int d = 0; d < n_components; ++d) // loop over the components
           {
             for (unsigned int i = 0; i < dofs_per_component; ++i)
+              // Extract the input DoF for component d and the current SIMD lane.
               cell_src[i] = in_array[i + d * dofs_per_component][cell_in_lane];
-
-            cell_matrix.vmult(cell_dst, cell_src);
+            // We put in cell_dst (destination) the mult between cell_matrix and cell_src (source)
+            cell_matrix.vmult(cell_dst, cell_src); // Apply the inverse local mass matrix to each vector component.
 
             for (unsigned int i = 0; i < dofs_per_component; ++i)
+              // Store the computed local result back into the output SIMD array.
               out_array[i + d * dofs_per_component][cell_in_lane] = cell_dst(i);
           }
       }
-    else
+    else // fully dry cells, we set the output to zero
       {
         for (unsigned int d = 0; d < n_components; ++d)
           for (unsigned int i = 0; i < dofs_per_component; ++i)
@@ -260,7 +286,18 @@ namespace MatrixFreeOperatorsOceano
   {}
 
 
-
+  // CELLWISE INVERSE MASS MATRIX - LUMPED APPROXIMATION
+  // Applies the inverse of a diagonal (lumped) DG mass matrix.
+  // So the extra-diagonal elements are lumped onto the diagonal itself
+  //
+  // Unlike the full-matrix approach, only the diagonal entries
+  // are stored and inverted, avoiding matrix factorization.
+  //
+  // This approximation is first-order accurate but supports
+  // SIMD vectorization, making the inversion computationally cheaper.
+  // Since we do not need to compute the whole matrix, we do not need to compute the cell_matrix for each cell
+  //
+  // Fully dry cells are handled by setting the output to zero.
   template <int dim,
             int fe_degree,
             int n_components,
@@ -273,28 +310,45 @@ namespace MatrixFreeOperatorsOceano
     n_components,
     Number,
     VectorizedArrayType>::
-      apply(const VectorizedArrayType *mass_array,
-            const VectorizedArrayType *in_array,
-            VectorizedArrayType       *out_array,
-            const VectorizedArrayType  mask) const
+      apply(const VectorizedArrayType *mass_array, // Local mass-matrix entries stored in SIMD format.
+            const VectorizedArrayType *in_array, // Input vector to which the inverse mass matrix is applied.
+            VectorizedArrayType       *out_array, // Output vector containing the result of the inversion.
+                                                  // we do not have cell_in_lane because we are working only on the diagonal
+            const VectorizedArrayType  mask) const // Mask used to identify active/non-dry cells.
   {
+    // If fe_degree >= 0, then given_degree = fe_degree. Else we get the degree from the object fe_eval
     const unsigned int given_degree =
         (fe_degree > -1) ? fe_degree :
                            fe_eval.get_shape_info().data.front().fe_degree;
-
+    // Compute the degree of freedom per component, assuming tensorial elements we have:
+    // DoF = (1+p)^dim
     const unsigned int dofs_per_component =
         Utilities::pow(given_degree + 1, dim);
-
+    // Read the total number of quadrature points in fe_eval
     const unsigned int n_q_points =
         fe_eval.get_shape_info().n_q_points;
 
     for (unsigned int d = 0; d < n_components; ++d)
       for (unsigned int i = 0; i < dofs_per_component; ++i)
+        // Apply the inverse diagonal mass matrix component-wise.
+        // For each SIMD lane, divide by the corresponding diagonal entry
+        // if the cell is unmasked; otherwise, set the result to zero.
+
+        // Apply the inverse lumped mass matrix using SIMD operations.
+        // compare_and_apply_mask<less_than>(a, b, x, y) selects x if a < b,
+        // and y otherwise, independently for each SIMD lane.
+        //
+        // Here, mask < n_q_points selects the cells where the inversion is applied.
+        // The third argument computes input / diagonal mass coefficient,
+        // while the fourth argument (0.) sets the output to zero for masked cells.
+        //
+        // The operation is performed directly on VectorizedArrayType objects,
+        // without extracting individual SIMD lanes.
         out_array[i + d * dofs_per_component] =
           compare_and_apply_mask<SIMDComparison::less_than>(
             mask, n_q_points,
             1./mass_array[i] * in_array[i + d * dofs_per_component],
-            0.);
+            0.); // when the cell is NOT fully dry, the inversion of the diagonal is simply y = x / m_ii
   }
 } // namespace MatrixFreeOperatorsOceano
 #endif //OPERATORS_H
