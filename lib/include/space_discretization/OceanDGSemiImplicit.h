@@ -203,10 +203,11 @@ namespace SpaceDiscretization
         for (unsigned int q = 0; q < phi_height.n_q_points; ++q)
           {
             const auto z_q = phi_height.get_value(q);
-            const auto zb_q = data_quadrature_cell_1.get_data(cell, q);
+            // const auto zb_q = data_quadrature_cell_1.get_data(cell, q);
 
             phi_height.submit_value(
-              z_q, // we should have + zb_q, but we are linearizing around the bathymetry, so zb_q should go in the RHS
+              z_q, // we should have + zb_q, but we are considering the linearized operator
+                   // so the bathymetry goes into the right side
               q);
           }
 
@@ -235,8 +236,8 @@ namespace SpaceDiscretization
   {
     // solution_height.zero_out_ghost_values();
     data.cell_loop(
-        &Base::local_apply_linearized_cell_mass_height,
-        static_cast<const Base *>(this),
+        &OceanoOperatorSemiImplicit::local_apply_linearized_cell_mass_height,
+        this,
         dst,
         src,
         true);
@@ -1505,7 +1506,7 @@ namespace SpaceDiscretization
             },
             1);
         }
-      else
+      else // We are either NOT at the last stage OR the last stage is implicit (not exclusive or) 
         {
           // For the inner stages we solve the system using the Schur complement.
           // The first step updates the discharge with the explicit contributions
