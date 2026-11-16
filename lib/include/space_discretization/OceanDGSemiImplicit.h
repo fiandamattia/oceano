@@ -22,6 +22,7 @@
 #include <space_discretization/OceanDG.h>
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/precondition.h>
 
 /**
  * Namespace containing the spatial Operator
@@ -1425,35 +1426,29 @@ namespace SpaceDiscretization
         }
     }
 
-
-    /*
-    * Assemble and combine the previously computed DG residuals using
-    * the IMEX Runge-Kutta coefficients, then update the stage solutions.
-    *
-    * For implicit stages, the procedure follows equations (17a)-(17c):
-    * 1. Compute the intermediate discharge Q* by applying A^(-1).
-    * 2. Assemble and solve the free-surface equation for zeta
-    *    (the Schur complement solve is still to be implemented).
-    * 3. Correct Q* using the pressure contribution to obtain Q.
-    *
-    * For a final explicit stage, update the solution directly using
-    * the accumulated residuals and the inverse mass matrices.
-    */
+    // Now we combine the residuals and apply the inverse mass matrix to update the solution.
     {
       TimerOutput::Scope t(timer, "rk_stage hydro - inv mass + vec upd");
+      // Fully explicit RK stage: no implicit solve is required, so we use a different code path.
       if (current_stage == n_stages-1 && !is_last_stage_implicit)
-        {
+        {          
           // As anticipated, If the last stage is explicit, we use a completely
           // different code path, as we do not have to invert any sparse matrix.
           // We simply accumulate the residuals in a temporary vector, invert the
           // local mass matrix, and add the result to the old solution vector.
+
+          // First, we assemble the right-hand side of the free-surface equation.
+          // The RK stage residuals are weighted by their coefficients and accumulated
+          // in vec_ki_height.front().
+          // The local_apply_cell_mass_height operator then adds H(zeta^n),
+          // which includes the bathymetry contribution in the general case.
           data.cell_loop(
             &Base::local_apply_cell_mass_height,
             static_cast<const Base *>(this),
             vec_ki_height.front(),
             solution_height,
             [&](const unsigned int start_range, const unsigned int end_range) {
-              /* DEAL_II_OPENMP_SIMD_PRAGMA */
+              // DEAL_II_OPENMP_SIMD_PRAGMA
               for (unsigned int i = start_range; i < end_range; ++i)
                 {
                   Number k_i           = vec_ki_height[1].local_element(i);
@@ -1467,22 +1462,51 @@ namespace SpaceDiscretization
 	    },
             std::function<void(const unsigned int, const unsigned int)>(),
             0);
+          // Apply the inverse mass operator to obtain the updated free-surface elevation.
+          // For the GMRES test, this operation will be replaced by an iterative solve.
 
+          /*
           solution_height.zero_out_ghost_values();
           data.cell_loop(
             &Base::local_apply_inverse_mass_matrix_height,
             static_cast<const Base *>(this),
             solution_height,
             vec_ki_height.front());
+          */
 
+          // Solve the free-surface equation using GMRES.
+          // For the current test, the operator reduces to the mass matrix.
 
+          solution_height.zero_out_ghost_values(); // mette a 0 i valori sulle celle ghost sugli altri processori
+
+          SolverControl solver_control(
+              1000,
+              1e-8);
+            // 1e-10 * vec_ki_height.front().l2_norm()
+
+          SolverGMRES<LinearAlgebra::distributed::Vector<Number>>
+              gmres(solver_control);
+
+          gmres.solve(
+              *this,
+              solution_height,
+              vec_ki_height.front(),
+              PreconditionIdentity());
+
+          //std::cout << "GMRES iterations: "
+          //<< solver_control.last_step() << std::endl;
+
+          // Assemble the right-hand side of the discharge equation by accumulating
+          // the RK stage residuals weighted by their corresponding coefficients.
+          // Apply the inverse mass matrix to compute the discharge increment,
+          // which is then added to the previous solution.
           data.cell_loop(
             &Base::local_apply_inverse_mass_matrix_discharge,
             static_cast<const Base *>(this),
             next_ri_discharge,
             vec_ki_discharge.front(),
             [&](const unsigned int start_range, const unsigned int end_range) {
-              /* DEAL_II_OPENMP_SIMD_PRAGMA */
+              // DEAL_II_OPENMP_SIMD_PRAGMA
               for (unsigned int i = start_range; i < end_range; ++i)
                 {
                   Number kex_i           = vec_ki_discharge[1].local_element(i);
@@ -1497,7 +1521,7 @@ namespace SpaceDiscretization
                 }
             },
             [&](const unsigned int start_range, const unsigned int end_range) {
-              /* DEAL_II_OPENMP_SIMD_PRAGMA */
+              // DEAL_II_OPENMP_SIMD_PRAGMA
               for (unsigned int i = start_range; i < end_range; ++i)
                 {
                   const Number sol_i     = next_ri_discharge.local_element(i);
@@ -1508,6 +1532,20 @@ namespace SpaceDiscretization
         }
       else // We are either NOT at the last stage OR the last stage is implicit (not exclusive or) 
         {
+          /*
+          * Assemble and combine the previously computed DG residuals using
+          * the IMEX Runge-Kutta coefficients, then update the stage solutions.
+          *
+          * For implicit stages, the procedure follows equations (17a)-(17c):
+          * 1. Compute the intermediate discharge Q* by applying A^(-1).
+          * 2. Assemble and solve the free-surface equation for zeta
+          *    (the Schur complement solve is still to be implemented).
+          * 3. Correct Q* using the pressure contribution to obtain Q.
+          *
+          * For a final explicit stage, update the solution directly using
+          * the accumulated residuals and the inverse mass matrices.
+          */
+
           // For the inner stages we solve the system using the Schur complement.
           // The first step updates the discharge with the explicit contributions
           // only. A cell loop assembles the right-hand side into the

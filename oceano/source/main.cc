@@ -37,7 +37,7 @@
 // First come the numerics. The following preprocessor select the time integrator. For
 // now we have coded general explicit schemes that belong to the family of Runge-Kutta scheme.
 #undef  TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-#define TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
+#define   TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
 
 // Than it comes the space discretization based on Discontinuous Galerkin. Different
 // combinations are possible: an explicit scheme, a scheme with implicit friction or a
@@ -45,8 +45,8 @@
 // discretization, e.g. the explicit space implementation must go with the explicit time
 // discretization:
 #undef  SPACEDISCRETIZATION_EXPLICIT
-#define SPACEDISCRETIZATION_IMPLICITFRICTION
-#undef  SPACEDISCRETIZATION_SEMIIMPLICIT
+#undef SPACEDISCRETIZATION_IMPLICITFRICTION
+#define  SPACEDISCRETIZATION_SEMIIMPLICIT
 // The numerical flux (Riemann solver) at the faces between cells. For this
 // program, we have implemented a modified variant of the Lax--Friedrichs
 // flux and the Harten--Lax--van Leer (HLL) flux:
@@ -57,21 +57,21 @@
 // Here the data are imported from external files and it can target any shallow
 // water simulation.
 #undef  ICBC_IMPULSIVEWAVE
-#undef  ICBC_SHALLOWWATERVORTEX
+#define  ICBC_SHALLOWWATERVORTEX
 #undef  ICBC_STOMMELGYRE
 #undef  ICBC_LAKEATREST
 #undef  ICBC_TRACERADVECTION
 #undef  ICBC_CHANNELFLOW
 #undef  ICBC_THACKEROSCILLATIONS2D
-#define ICBC_PREYPREDATORADVECTION
+#undef ICBC_PREYPREDATORADVECTION
 #undef  ICBC_REALISTIC
 // We have a few models: the base model are the shallow water equations. You can add the
 // computation of passive tracers or you can add a simple suspended sediment module or a
 // biological ones. Please select the number of tracers below.
-#undef  MODEL_SHALLOWWATER
+#define  MODEL_SHALLOWWATER
 #undef MODEL_SHALLOWWATERWITHTRACER
 #undef  MODEL_SHALLOWWATERWITHSEDIMENT
-#define  MODEL_SHALLOWWATERWITHBIOLOGY
+#undef  MODEL_SHALLOWWATERWITHBIOLOGY
 // Next come the physics. With the following cpp keys one can switch between the different
 // formulations of a given term in the right-hand side of the shallow water equations.
 // For the bottom friction one has two formulations: a simple linear bottom friction and
@@ -97,8 +97,8 @@
 #undef  PHYSICS_DIFFUSIONCOEFFICIENTSMAGORINSKY
 // We end with the error estimate for AMR:
 #undef  HPOCEANO_ERRORHEIGHTGRADIENT
-#undef  HPOCEANO_ERRORVORTICITY
-#define HPOCEANO_ERRORTRACERGRADIENT
+#define  HPOCEANO_ERRORVORTICITY
+#undef HPOCEANO_ERRORTRACERGRADIENT
 #undef  HPOCEANO_ERRORBATHYMETRY
 #undef  HPOCEANO_ERRORFROMFILE
 //
@@ -240,7 +240,7 @@ namespace Problem
   // want to use for the volume terms:
   constexpr unsigned int n_q_points_1d        = floor(1.5*fe_degree) + 1;
   // The number of tracers, and as a consequence of prognostic variables:
-  constexpr unsigned int n_tracers            = 2;
+  constexpr unsigned int n_tracers            = 0;
   constexpr unsigned int n_variables          = dimension + 1 + n_tracers;
   // and the maximum number of iterations for the iterative method that invert the
   // mass matrix in the continuity equation. For wet-dry cells convergence
@@ -251,9 +251,9 @@ namespace Problem
   // Next off is the choice of the time integrator scheme: please check the time integrator
   // class to see the list of all possible time integrators:
 #if defined TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_2;
+  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_1_order_1;
 #elif defined TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
-  constexpr TimeIntegrator::AdditiveRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_2;
+  constexpr TimeIntegrator::AdditiveRungeKuttaScheme rk_scheme = TimeIntegrator::stage_1_order_1;
 #endif
   //
   //
