@@ -1174,8 +1174,8 @@ template <int dim, int n_tra, int degree, int n_points_1d>
             // Account for the jump of the test function:
             // [[psi_i]] = psi_i_minus * n_minus + psi_i_plus * n_plus,
             // with n_plus = -n_minus.
-            phi_height_m.submit_value(-numerical_flux, q);
-            phi_height_p.submit_value(numerical_flux, q);
+            phi_height_m.submit_value(numerical_flux, q);
+            phi_height_p.submit_value(-numerical_flux, q);
           }
 
         phi_height_p.integrate_scatter(EvaluationFlags::values, dst);
@@ -1251,7 +1251,7 @@ template <int dim, int n_tra, int degree, int n_points_1d>
 
             // On the boundary, the jump of the test function is simply [[psi_i]] = psi_i_minus * n_minus,
             // since there is no exterior test function.
-            phi_height.submit_value(-numerical_flux, q);
+            phi_height.submit_value(numerical_flux, q);
           }
 
         phi_height.integrate_scatter(EvaluationFlags::values, dst);
@@ -1329,11 +1329,31 @@ template <int dim, int n_tra, int degree, int n_points_1d>
     // We apply the mass matrix: dst = M * src, where M is the mass matrix associated with the free-surface height equation.
     vmult_mass_matrix(dst, src);
 
-    // We apply the pressure discharge operator: dst = E * src, where E is the pressure discharge operator associated with the momentum equation.
-    LinearAlgebra::distributed::Vector<Number> tmp;
-    tmp.reinit(reference_discharge);
-    vmult_pressure_discharge(tmp, src);
+    // We apply the pressure discharge operator: tmpE = E * src, where E is the pressure discharge operator associated with the momentum equation.
+    LinearAlgebra::distributed::Vector<Number> tmpE;
+    tmpE.reinit(reference_discharge);
+    vmult_pressure_discharge(tmpE, src);
 
+    // We apply the inverse modified mass matrix: tmpA1E = A_1^{-1} * tmpE, where A_1^{-1} is the inverse modified mass matrix associated with the momentum equation.
+    LinearAlgebra::distributed::Vector<Number> tmpA1E;
+    tmpA1E.reinit(reference_discharge);
+    vmult_inverse_modified_mass_matrix(tmpA1E, tmpE);
+
+    // We apply the mass flux operator: tmpBA1E = B * tmpA1E, where B is the mass flux operator
+    LinearAlgebra::distributed::Vector<Number> tmpBA1E;
+    tmpBA1E.reinit(reference_height);
+    vmult_mass_flux(tmpBA1E, tmpA1E);
+
+    // We add the contributions just computed to the destination vector: dst = M * src + factor_matrix^2 * B * A_1^{-1} * E * src
+    dst.add(factor_matrix * factor_matrix, tmpBA1E);
+
+    // We apply the Lax-Friedrichs stabilization operator: tmpD = D * src, where D is the Lax-Friedrichs stabilization operator associated with the free-surface height equation.
+    LinearAlgebra::distributed::Vector<Number> tmpD;
+    tmpD.reinit(reference_height);
+    vmult_lax_friedrichs_stabilization(tmpD, src);
+
+    // We add the contributions just computed to the destination vector: dst = M * src + factor_matrix^2 * B * A_1^{-1} * E * src - factor_matrix * D * src
+    dst.add(factor_matrix, tmpD);
   }
 
   template <int dim, int n_tra, int degree, int n_points_1d>
@@ -1412,6 +1432,25 @@ template <int dim, int n_tra, int degree, int n_points_1d>
                 &OceanoOperatorSemiImplicit::local_apply_linearized_cell_height,
                 &OceanoOperatorSemiImplicit::local_apply_linearized_face_height,
                 &OceanoOperatorSemiImplicit::local_apply_linearized_boundary_face_height,
+                this,
+                dst,
+                src,
+                true,
+                MatrixFree<dim, Number>::DataAccessOnFaces::values, // access the face values of the dst
+                MatrixFree<dim, Number>::DataAccessOnFaces::values); // access the face values of the src
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  vmult_lax_friedrichs_stabilization(
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const LinearAlgebra::distributed::Vector<Number> &src
+  ) const
+  {
+          data.loop(
+                static_cast<decltype(&OceanoOperatorSemiImplicit::local_apply_linearized_face_D)>(nullptr), // no cell contribution for the Lax-Friedrichs stabilization
+                &OceanoOperatorSemiImplicit::local_apply_linearized_face_D,
+                &OceanoOperatorSemiImplicit::local_apply_linearized_boundary_face_D,
                 this,
                 dst,
                 src,
@@ -2661,7 +2700,7 @@ template <int dim, int n_tra, int degree, int n_points_1d>
 
           SolverControl solver_control(
               1000,
-              1e-12);
+              1e-10 * vec_ki_height.front().l2_norm());
             // 1e-10 * vec_ki_height.front().l2_norm()
 
           SolverGMRES<LinearAlgebra::distributed::Vector<Number>>
@@ -2887,17 +2926,13 @@ template <int dim, int n_tra, int degree, int n_points_1d>
           // The mass matrix inversion is left to Mattia master thesis. It should go here
           // with output vector the `solution` vector for last stage and `next_ri` vector
           // for inner stages.
-          /* TODO */
-          // Guaarda rigaa 824 di Atmospheric flow di orlndo
-	  // Clsse di DEALII = SolverGMRES, solvercontrol dealii (fine tuning)
-          // Noi abbimo già la rhs, pres_fix è l solution, che per noi è next_ri_height perchè solution_height è zeta_n e euler_matrix è la nostra lhs. Per creare la lhs us l MatrixDFreeOperator, è una derived clss e va reimplementta un tot di roba, tipo pply_add, per noi apply_add è tutto l'operatore dellaa lefthand side, dove ovviamente avro dei data_cell loop da faare e dei dta_face_loop da fare e guardare anche i vmult, apply_add probabilmente prende in input direttamente tutt la rhs, va tutto scritto  come matrice*vettore, senza salvare mtrici, nota bene che non è detto che bisogna costruire le mtrici perchè maaagaari sono dei fake vmult, che in realtà sono solo dei daata_loop
-          
+
           // Solve the free-surface equation using GMRES.
           // For the current test, the operator reduces to the mass matrix.
 
           SolverControl solver_control(
               1000,
-              1e-12);
+              1e-10);
             // 1e-10 * vec_ki_height.front().l2_norm()
 
           SolverGMRES<LinearAlgebra::distributed::Vector<Number>>
@@ -2933,6 +2968,9 @@ template <int dim, int n_tra, int degree, int n_points_1d>
                 vec_ki_height.front(),
                 PreconditionIdentity());
           }
+
+          std::cout << "GMRES iterations: "
+          << solver_control.last_step() << std::endl;
 
           // The last step is the correction of the "star" discharge. With the
           // updated free surface at hand, we compute the pressure terms. For face
