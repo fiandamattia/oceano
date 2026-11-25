@@ -105,6 +105,17 @@ namespace NumericalFlux
                               const Tensor<1, dim, Number> &normal,
                               const Number                  zb_m,
                               const Number                  zb_p) const;
+        
+    template <int dim, typename Number>
+    inline DEAL_II_ALWAYS_INLINE //
+      Number
+      maximum_characteristic_wavespeed(const Number         z_m,
+                              const Number                  z_p,
+                              const Tensor<1, dim, Number> &q_m,
+                              const Tensor<1, dim, Number> &q_p,
+                              const Tensor<1, dim, Number> &normal,
+                              const Number                  zb_m,
+                              const Number                  zb_p) const;
   };
 
 
@@ -171,7 +182,31 @@ namespace NumericalFlux
   //
   // A common bathymetry zb_star = min(zb_m, zb_p) is used to reconstruct
   // the water depths, discharges, and free-surface elevations.
-  //
+  
+template <int dim, typename Number>
+  inline DEAL_II_ALWAYS_INLINE //
+    Number
+    LaxFriedrichsModified::maximum_characteristic_wavespeed(
+      const Number                  z_m,
+      const Number                  z_p,
+      const Tensor<1, dim, Number> &q_m,
+      const Tensor<1, dim, Number> &q_p,
+      const Tensor<1, dim, Number> &normal,
+      const Number                  zb_m,
+      const Number                  zb_p) const
+  {
+    const auto v_m = model.velocity<dim>(z_m, q_m, zb_m); // velocity on the minus side of the face
+    const auto v_p = model.velocity<dim>(z_p, q_p, zb_p); // velocity on the plus side of the face
+
+    const auto lambda_m = std::abs(v_m * normal)
+      + std::sqrt(model.square_wavespeed(z_m, zb_m)); // maximum characteristic wave speed on the minus side of the face
+    const auto lambda_p = std::abs(v_p * normal)
+      + std::sqrt(model.square_wavespeed(z_p, zb_p)); // maximum characteristic wave speed on the plus side of the face
+
+    const auto lambda = std::max(lambda_p, lambda_m); // maximum characteristic wave speed across the interface
+    return lambda;
+  }
+
   // Mathematically, the numerical flux projected onto the face normal is:
   // 0.5 * (q_star_m + q_star_p) · n
   // + 0.5 * lambda * (zeta_star_m - zeta_star_p)

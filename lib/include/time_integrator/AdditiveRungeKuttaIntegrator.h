@@ -90,6 +90,7 @@ namespace TimeIntegrator
     bool is_last_stage_implicit() const
     {
       return dtildei[n_stages()-1] > 0.;
+      // return true;
     }
 
     template <typename VectorType>

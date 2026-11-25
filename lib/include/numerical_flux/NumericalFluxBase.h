@@ -77,6 +77,17 @@ namespace NumericalFlux
                                 const Number                     zb_m,
                                 const Number                     zb_p) const;
 
+    template <int dim, typename Number>
+    inline DEAL_II_ALWAYS_INLINE //
+      Tensor<1, dim, Number>
+      numerical_linearized_presflux_strong(const Number                 z_m,
+                                           const Number                 z_p,
+                                           const Number                 zref_m,
+                                           const Number                 zref_p,
+                                           const Tensor<1, dim, Number> &normal,
+                                           const Number                 zb_m,
+                                           const Number                 zb_p) const;
+
 #if defined MODEL_SHALLOWWATER
     Model::ShallowWater model;
 #elif defined MODEL_SHALLOWWATERWITHTRACER
@@ -132,6 +143,43 @@ namespace NumericalFlux
     return model.g * 0.5 * h_p * (zcorr_p - zcorr_m) * normal;
 #endif
   }
-   
+
+  // Notice that in the linearized version, we need to keep the dependecies on zeta linearized
+  // hence we cannot correct the free-surface height with the bathymetry, as it would introduce
+  // a non-linear term.
+  // At the same time, the depth can be computed with the hydrostatic reconstruction, since
+  // we use the reference free-surface height.
+  template <int dim, typename Number>
+  inline DEAL_II_ALWAYS_INLINE //
+    Tensor<1, dim, Number>
+    NumericalFluxBase::numerical_linearized_presflux_strong(
+      const Number                      z_m,
+      const Number                      z_p,
+      const Number                      zref_m,
+      const Number                      zref_p,
+      const Tensor<1, dim, Number>     &normal,
+      const Number                      zb_m,
+      const Number                      zb_p) const
+  {
+    const auto zb_star = std::min(zb_m, zb_p); // hydrostatic reconstruction of the bathymetry at the interface
+    const auto h_p = model.depth(zref_p, zb_star); // depth on the plus side of the interface
+    // h_m = depth on the minus side of the interface, is computed only for the center flux, not for the outer flux, as it is not needed.
+    // const auto zcorr_m = std::max(z_m, -zb_star); // free-surface height on the minus side of the interface, corrected for wet-dry interface
+    // const auto zcorr_p = std::max(z_p, -zb_star); // free-surface height on the plus side of the interface, corrected for wet-dry interface
+#if defined NUMERICALFLUXBASE_CENTER
+    const auto h_m = model.depth(zref_m, zb_star); // depth on the minus side of the interface
+    // we need to get g from the model, as it is a member of the model class.
+    // Computes the numerical pressure flux corresponding to
+    // g * {{h*}} * {{phi_i}} · [[zeta*]], excluding the test-function
+    // contribution, which is handled by submit_value().
+    // (so it appears 0.25 as a factor, as we have 0.5 for the average and 0.5 for the jump)
+    // return model.g * 0.25 * (h_p + h_m) * (zcorr_p - zcorr_m) * normal;
+    return model.g * 0.25 * (h_p + h_m) * (z_p - z_m) * normal;
+#elif defined NUMERICALFLUXBASE_OUTER
+    (void) zb_m;
+    return model.g * 0.5 * h_p * (zcorr_p - zcorr_m) * normal;
+#endif
+  }
+
 } // namespace NumericalFlux
 #endif //NUMERICALFLUXBASE_H

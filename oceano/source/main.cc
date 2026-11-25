@@ -36,8 +36,8 @@
 
 // First come the numerics. The following preprocessor select the time integrator. For
 // now we have coded general explicit schemes that belong to the family of Runge-Kutta scheme.
-#undef  TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-#define   TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
+#undef TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
+#define  TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
 
 // Than it comes the space discretization based on Discontinuous Galerkin. Different
 // combinations are possible: an explicit scheme, a scheme with implicit friction or a
@@ -56,14 +56,14 @@
 // We implement many test cases and a last generic class named as "Realistic".
 // Here the data are imported from external files and it can target any shallow
 // water simulation.
-#undef  ICBC_IMPULSIVEWAVE
-#define  ICBC_SHALLOWWATERVORTEX
+#define  ICBC_IMPULSIVEWAVE
+#undef  ICBC_SHALLOWWATERVORTEX
 #undef  ICBC_STOMMELGYRE
 #undef  ICBC_LAKEATREST
 #undef  ICBC_TRACERADVECTION
 #undef  ICBC_CHANNELFLOW
 #undef  ICBC_THACKEROSCILLATIONS2D
-#undef ICBC_PREYPREDATORADVECTION
+#undef  ICBC_PREYPREDATORADVECTION
 #undef  ICBC_REALISTIC
 // We have a few models: the base model are the shallow water equations. You can add the
 // computation of passive tracers or you can add a simple suspended sediment module or a

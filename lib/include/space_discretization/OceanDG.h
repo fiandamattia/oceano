@@ -730,6 +730,12 @@ namespace SpaceDiscretization
         for (unsigned int q = 0; q < phi_height.n_q_points; ++q)
           {
             const auto z_q = phi_height.get_value(q);
+            /*
+            if (z_q[0] < 10e-12 || z_q[1] < 10e-12)
+            {
+              std::cout << "Warning: negative water depth detected in cell " << cell << " at quadrature point " << q << std::endl;
+            }
+            */
             const auto zb_q = data_quadrature_cell_1.get_data(cell, q);
 
             phi_height.submit_value(

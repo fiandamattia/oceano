@@ -347,7 +347,7 @@ namespace TimeSteppingOceano
     switch (method)
       {
         case (BACKWARD_EULER):
-          /*{
+          {
             this->n_stages = 1;
             std::vector<double> tmp;
             tmp.resize(1);
@@ -358,8 +358,8 @@ namespace TimeSteppingOceano
             this->d.push_back(1.0);
 
             break;
-          }*/
-
+          }
+          /*
           {
             this->n_stages = 1;
             std::vector<double> tmp;
@@ -371,6 +371,7 @@ namespace TimeSteppingOceano
             this->d.push_back(0.0);
             break;
           }
+          */
 
         case (TRAPEZOIDAL_BDF2):
           {
