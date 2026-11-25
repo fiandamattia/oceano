@@ -36,17 +36,17 @@
 
 // First come the numerics. The following preprocessor select the time integrator. For
 // now we have coded general explicit schemes that belong to the family of Runge-Kutta scheme.
-#undef TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-#define  TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
+#define TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
+#undef  TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
 
 // Than it comes the space discretization based on Discontinuous Galerkin. Different
 // combinations are possible: an explicit scheme, a scheme with implicit friction or a
 // semi-implicit scheme. Note that the space discretization should match the time
 // discretization, e.g. the explicit space implementation must go with the explicit time
 // discretization:
-#undef  SPACEDISCRETIZATION_EXPLICIT
+#define  SPACEDISCRETIZATION_EXPLICIT
 #undef SPACEDISCRETIZATION_IMPLICITFRICTION
-#define  SPACEDISCRETIZATION_SEMIIMPLICIT
+#undef  SPACEDISCRETIZATION_SEMIIMPLICIT
 // The numerical flux (Riemann solver) at the faces between cells. For this
 // program, we have implemented a modified variant of the Lax--Friedrichs
 // flux and the Harten--Lax--van Leer (HLL) flux:
@@ -251,7 +251,7 @@ namespace Problem
   // Next off is the choice of the time integrator scheme: please check the time integrator
   // class to see the list of all possible time integrators:
 #if defined TIMEINTEGRATOR_EXPLICITRUNGEKUTTA
-  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_1_order_1;
+  constexpr TimeIntegrator::ExplicitRungeKuttaScheme rk_scheme = TimeIntegrator::stage_3_order_3;
 #elif defined TIMEINTEGRATOR_ADDITIVERUNGEKUTTA
   constexpr TimeIntegrator::AdditiveRungeKuttaScheme rk_scheme = TimeIntegrator::stage_1_order_1;
 #endif

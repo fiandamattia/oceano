@@ -20,7 +20,8 @@ subsection Time parameters
   # Final time the simulation
   set Final_time = 3.0
   # Courant number
-  set CFL = 0.14
+  # set CFL = 0.14
+  set CFL = 0.001
 end
 
 subsection Physical constants
@@ -32,7 +33,7 @@ end
 
 subsection Output parameters
   # Name of the output file (without extension)
-  set Output_filename = output_implicit_40x40/solution
+  set Output_filename = output_explicit_40x40/solution
   # Time interval to output the solution
   set Solution_tick = 0.1
   # Flag if you wish to add the error field with respect to an exact solution

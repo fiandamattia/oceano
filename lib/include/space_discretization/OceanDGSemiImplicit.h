@@ -146,6 +146,18 @@ namespace SpaceDiscretization
       const LinearAlgebra::distributed::Vector<Number>              &src,
       const std::pair<unsigned int, unsigned int>                   &face_range) const;
 
+    void local_apply_linearized_face_pressure_discharge_correction(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &face_range) const;
+
+    void local_apply_linearized_boundary_pressure_discharge_correction(
+      const MatrixFree<dim, Number>                                 &data,
+      LinearAlgebra::distributed::Vector<Number>                    &dst,
+      const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+      const std::pair<unsigned int, unsigned int>                   &face_range) const;
+
     void local_apply_linearized_boundary_pressure_discharge(
       const MatrixFree<dim, Number>                                 &data,
       LinearAlgebra::distributed::Vector<Number>                    &dst,
@@ -459,6 +471,80 @@ namespace SpaceDiscretization
 
   template <int dim, int n_tra, int degree, int n_points_1d>
   void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_linearized_face_pressure_discharge_correction(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_m(data, face_range,
+                                                                      true, 0, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_height_p(data, face_range,
+                                                                      false, 0, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, dim, Number> phi_discharge_m(data, face_range,
+                                                                      true, 1, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, dim, Number> phi_discharge_p(data, face_range,
+                                                                      false, 1, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_reference_height_m(data, face_range,
+                                                                      true, 0, 1);
+    FEFaceEvaluation<dim, -1, degree + 2, 1, Number> phi_reference_height_p(data, face_range,
+                                                                      false, 0, 1);
+
+    for (unsigned int face = face_range.first; face < face_range.second; ++face)
+      {
+        phi_height_p.reinit(face);
+        phi_height_p.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the plus side of the face
+        phi_reference_height_p.reinit(face);
+        phi_reference_height_p.gather_evaluate(reference_height, EvaluationFlags::values); // reference free-surface height on the plus side of the face
+        phi_discharge_p.reinit(face);
+
+        phi_height_m.reinit(face);
+        phi_height_m.gather_evaluate(src[0], EvaluationFlags::values); // free-surface height on the minus side of the face
+        phi_reference_height_m.reinit(face);
+        phi_reference_height_m.gather_evaluate(reference_height, EvaluationFlags::values); // reference free-surface height on the minus side of the face
+        phi_discharge_m.reinit(face);
+
+        for (unsigned int q = 0; q < phi_discharge_m.n_q_points; ++q)
+          {
+            const auto z_m    = phi_height_m.get_value(q); // free-surface height on the minus side of the face at q-th quadrature point
+            const auto z_p    = phi_height_p.get_value(q); // free-surface height on the plus side of the face at q-th quadrature point
+            const auto zref_m = phi_reference_height_m.get_value(q); // reference free-surface height on the minus side of the face at q-th quadrature point
+            const auto zref_p = phi_reference_height_p.get_value(q); // reference free-surface height on the plus side of the face at q-th quadrature point
+            const auto normal = phi_discharge_m.normal_vector(q); // normal vector at the interface pointing from plus face to minus face
+            const auto zb_m   = data_quadrature_face.get_data(face, 2*q); // bathymetry on the minus side of the face at the q-th quadrature point (even index)
+            const auto zb_p   = data_quadrature_face.get_data(face, 2*q+1); // bathymetry on the plus side of the face at the q-th quadrature point (odd index)
+            // The function numerical_presflux_strong, computes the numerical pressure flux corresponding to
+            // g * {{h*}} * {{phi_i}} · [[zeta*]], excluding the test-function
+            // contribution, which is handled by submit_value().
+            auto numerical_flux_m =
+              -num_flux.numerical_linearized_presflux_strong(z_m,
+                                                 z_p,
+                                                 zref_m,
+                                                 zref_p,
+                                                 normal,
+                                                 zb_m,
+                                                 zb_p); // numerical pressure flux on the minus side of the face
+            auto numerical_flux_p =
+               num_flux.numerical_linearized_presflux_strong(z_p,
+                                                 z_m,
+                                                 zref_p,
+                                                 zref_m,
+                                                 normal,
+                                                 zb_p,
+                                                 zb_m); // numerical pressure flux on the plus side of the face
+            // The numerical flux for the minus side is simply the negative of the plus side, since we are computing the jump across the face.
+            // Everything gets then submitted to the respective FEFaceEvaluation object of discharge for integration and scattering into the destination vector dst.
+            phi_discharge_m.submit_value(numerical_flux_m, q);
+            phi_discharge_p.submit_value(numerical_flux_p, q);
+          }
+
+        phi_discharge_p.integrate_scatter(EvaluationFlags::values, dst);
+        phi_discharge_m.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
   local_apply_linearized_boundary_pressure_discharge(
     const MatrixFree<dim, Number> &,
     LinearAlgebra::distributed::Vector<Number>                    &dst,
@@ -513,6 +599,85 @@ namespace SpaceDiscretization
             else if (boundary_id == 1)
             {
               z_p = 0.;
+              flux = num_flux.numerical_linearized_presflux_strong(z_m, z_p, zref_m, zref_p, normal, zb_m, zb_m);
+            }
+            // OUTFLOW BOUNDARY CORRECTION
+            // If the boundary is classified as outflow, suppress the numerical
+            // advective flux in SIMD lanes where the interior discharge points inward
+            // (q_m · n < -1e-12), preventing an incoming advective contribution.
+            if (at_outflow)
+              for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
+                {
+                  auto rho_u_dot_n = q_m * normal;
+                  if (rho_u_dot_n[v] < -1e-12)
+                    for (unsigned int d = 0; d < dim; ++d)
+                      flux[d][v] = 0.;
+                }
+            // Submit the negative numerical pressure flux, consistently with
+            // the boundary contribution of the stiff momentum equation.
+            phi_reference_discharge.submit_value(-flux, q);
+          }
+
+        phi_reference_discharge.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  template <int dim, int n_tra, int degree, int n_points_1d>
+  void OceanoOperatorSemiImplicit<dim, n_tra, degree, n_points_1d>::
+  local_apply_linearized_boundary_pressure_discharge_correction(
+    const MatrixFree<dim, Number> &,
+    LinearAlgebra::distributed::Vector<Number>                    &dst,
+    const std::vector<LinearAlgebra::distributed::Vector<Number>> &src,
+    const std::pair<unsigned int, unsigned int>                   &face_range) const
+  {
+    // Only the interior (minus) side is evaluated (true).
+    // The exterior (plus) state is obtained from the boundary condition.
+    FEFaceEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data, face_range, true, 0);
+    FEFaceEvaluation<dim, -1, n_points_1d, dim, Number> phi_reference_discharge(data, face_range, true, 1);
+    FEFaceEvaluation<dim, -1, n_points_1d, 1, Number> phi_reference_height(data, face_range, true, 0);
+
+    for (unsigned int face = face_range.first; face < face_range.second; ++face)
+      {
+        phi_height.reinit(face);
+        phi_height.gather_evaluate(src[0], EvaluationFlags::values);
+        
+        phi_reference_height.reinit(face);
+        phi_reference_height.gather_evaluate(reference_height, EvaluationFlags::values);
+
+        phi_reference_discharge.reinit(face);
+        phi_reference_discharge.gather_evaluate(reference_discharge, EvaluationFlags::values);
+
+        for (unsigned int q = 0; q < phi_reference_discharge.n_q_points; ++q)
+          {
+            const auto z_m    = phi_height.get_value(q);
+            const auto q_m    = phi_reference_discharge.get_value(q);
+            const auto zref_m = phi_reference_height.get_value(q);
+            const auto normal = phi_reference_discharge.normal_vector(q);
+            const auto point  = phi_height.quadrature_point(q);
+            const auto zb_m   =
+              data_quadrature_boundary.get_data(face-data.n_inner_face_batches(), q);
+
+            VectorizedArray<Number> z_p;
+            VectorizedArray<Number> zref_p;
+            Tensor<1, dim, VectorizedArray<Number>> q_p;
+            Tensor<1, dim, VectorizedArray<Number>> flux;
+            bool at_outflow;
+
+            const auto boundary_id = data.get_boundary_id(face);
+            // Construct the exterior (plus) state from the prescribed boundary condition,
+            // using the interior state, outward normal, position, and bathymetry.
+            Base::get_boundary_value(
+              boundary_id, zref_m, q_m, normal, point, zb_m, &zref_p, q_p, &at_outflow);
+
+            if (boundary_id == 0 || boundary_id == 2)
+              {
+                // In both cases of wall and supercritical outflow boundary conditions, the numerical flux is 
+                // suppressed, since the interior and exterior states are equal, i.e. z_m - z_p = 0
+                flux = 0.;
+              }
+            else if (boundary_id == 1)
+            {
+              z_p = zref_p; // For inflow boundary, set the exterior state to the reference state
               flux = num_flux.numerical_linearized_presflux_strong(z_m, z_p, zref_m, zref_p, normal, zb_m, zb_m);
             }
             // OUTFLOW BOUNDARY CORRECTION
@@ -1345,7 +1510,7 @@ template <int dim, int n_tra, int degree, int n_points_1d>
     vmult_mass_flux(tmpBA1E, tmpA1E);
 
     // We add the contributions just computed to the destination vector: dst = M * src + factor_matrix^2 * B * A_1^{-1} * E * src
-    dst.add(factor_matrix * factor_matrix, tmpBA1E);
+    dst.add(-factor_matrix * factor_matrix, tmpBA1E);
 
     // We apply the Lax-Friedrichs stabilization operator: tmpD = D * src, where D is the Lax-Friedrichs stabilization operator associated with the free-surface height equation.
     LinearAlgebra::distributed::Vector<Number> tmpD;
@@ -1748,18 +1913,22 @@ template <int dim, int n_tra, int degree, int n_points_1d>
     const std::pair<unsigned int, unsigned int>                   &cell_range) const
   {
     FEEvaluation<dim, -1, n_points_1d, 1, Number> phi_height(data,cell_range,0);
+    FEEvaluation<dim, -1, n_points_1d, 1, Number> phi_height_reference(data,cell_range,0);
     FEEvaluation<dim, -1, n_points_1d, dim, Number> phi_discharge(data,cell_range,1);
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         phi_height.reinit(cell);
         // In this operator we need both the values and the gradients of the free-surface height zeta, since they are used in the pressure-gradient term.
-        phi_height.gather_evaluate(src[0], EvaluationFlags::values | EvaluationFlags::gradients);
+        phi_height.gather_evaluate(src[0],EvaluationFlags::gradients);
         phi_discharge.reinit(cell);
+
+        phi_height_reference.reinit(cell);
+        phi_height_reference.gather_evaluate(reference_height, EvaluationFlags::values);
 
         for (unsigned int q = 0; q < phi_discharge.n_q_points; ++q)
           {
-            const auto z_q = phi_height.get_value(q); // free-surface height zeta at the q-th quadrature point
+            const auto zref_q = phi_height_reference.get_value(q); // reference free-surface height at the q-th quadrature point
             const auto dz_q = phi_height.get_gradient(q); // gradient of the free-surface height zeta at the q-th quadrature point
 
             const auto zb_q = data_quadrature_cell_0.get_data(cell, q)[0]; // bathymetry at the q-th quadrature point
@@ -1770,7 +1939,7 @@ template <int dim, int n_tra, int degree, int n_points_1d>
 
             
             phi_discharge.submit_value(
-              model.source_pressure(z_q, dz_q, zb_q),
+              model.source_pressure(zref_q, dz_q, zb_q),
               q);
           }
 
@@ -2969,8 +3138,8 @@ template <int dim, int n_tra, int degree, int n_points_1d>
                 PreconditionIdentity());
           }
 
-          std::cout << "GMRES iterations: "
-          << solver_control.last_step() << std::endl;
+          //std::cout << "GMRES iterations: "
+          //<< solver_control.last_step() << std::endl;
 
           // The last step is the correction of the "star" discharge. With the
           // updated free surface at hand, we compute the pressure terms. For face
@@ -2988,8 +3157,10 @@ template <int dim, int n_tra, int degree, int n_points_1d>
               : std::vector<LinearAlgebra::distributed::Vector<Number>>{next_ri_height, current_ri[1]};
           data.loop(
                 &OceanoOperatorSemiImplicit::local_apply_cell_pressure_discharge,
-                &OceanoOperatorSemiImplicit::local_apply_face_stiff_discharge,
-                &OceanoOperatorSemiImplicit::local_apply_boundary_face_stiff_discharge,
+                // &OceanoOperatorSemiImplicit::local_apply_face_stiff_discharge,
+                // &OceanoOperatorSemiImplicit::local_apply_boundary_face_stiff_discharge,
+                &OceanoOperatorSemiImplicit::local_apply_linearized_face_pressure_discharge_correction,
+                &OceanoOperatorSemiImplicit::local_apply_linearized_boundary_pressure_discharge_correction,
                 this,
                 vec_ki_discharge.front(),
                 input_vectors,
